@@ -24,6 +24,7 @@ TRANSFORMS = Registry("transforms")
 def index_operator(data_dict, index, duplicate=False):
     # index selection operator for keys in "index_valid_keys"
     # custom these keys by "Update" transform in config
+    # 对 data_dict 中的键进行索引操作
     if "index_valid_keys" not in data_dict:
         data_dict["index_valid_keys"] = [
             "coord",
@@ -49,6 +50,7 @@ def index_operator(data_dict, index, duplicate=False):
 
 
 @TRANSFORMS.register_module()
+# 收集指定 key 的数据，支持 offset 和特征拼接
 class Collect(object):
     def __init__(self, keys, offset_keys_dict=None, **kwargs):
         """
@@ -76,6 +78,7 @@ class Collect(object):
 
 
 @TRANSFORMS.register_module()
+# 复制指定的键到新的键
 class Copy(object):
     def __init__(self, keys_dict=None):
         if keys_dict is None:
@@ -94,6 +97,7 @@ class Copy(object):
 
 
 @TRANSFORMS.register_module()
+# 更新指定的键
 class Update(object):
     def __init__(self, keys_dict=None):
         if keys_dict is None:
@@ -107,6 +111,7 @@ class Update(object):
 
 
 @TRANSFORMS.register_module()
+# 将数据转换为张量
 class ToTensor(object):
     def __call__(self, data):
         if isinstance(data, torch.Tensor):
@@ -135,6 +140,7 @@ class ToTensor(object):
 
 
 @TRANSFORMS.register_module()
+# 颜色归一化
 class NormalizeColor(object):
     def __call__(self, data_dict):
         if "color" in data_dict.keys():
@@ -143,6 +149,7 @@ class NormalizeColor(object):
 
 
 @TRANSFORMS.register_module()
+# 坐标标准化
 class NormalizeCoord(object):
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
@@ -155,6 +162,7 @@ class NormalizeCoord(object):
 
 
 @TRANSFORMS.register_module()
+# 坐标偏移（最小值）
 class PositiveShift(object):
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
@@ -164,6 +172,7 @@ class PositiveShift(object):
 
 
 @TRANSFORMS.register_module()
+# 坐标偏移（中心）
 class CenterShift(object):
     def __init__(self, apply_z=True):
         self.apply_z = apply_z
@@ -181,6 +190,7 @@ class CenterShift(object):
 
 
 @TRANSFORMS.register_module()
+# 随机偏移
 class RandomShift(object):
     def __init__(self, shift=((-0.2, 0.2), (-0.2, 0.2), (0, 0))):
         self.shift = shift
@@ -195,6 +205,7 @@ class RandomShift(object):
 
 
 @TRANSFORMS.register_module()
+# 点云裁剪
 class PointClip(object):
     def __init__(self, point_cloud_range=(-80, -80, -3, 80, 80, 1)):
         self.point_cloud_range = point_cloud_range
@@ -210,6 +221,7 @@ class PointClip(object):
 
 
 @TRANSFORMS.register_module()
+# 随机丢弃
 class RandomDropout(object):
     def __init__(self, dropout_ratio=0.2, dropout_application_ratio=0.5):
         """
@@ -233,6 +245,7 @@ class RandomDropout(object):
 
 
 @TRANSFORMS.register_module()
+# 随机旋转
 class RandomRotate(object):
     def __init__(self, angle=None, center=None, axis="z", always_apply=False, p=0.5):
         self.angle = [-1, 1] if angle is None else angle
@@ -270,6 +283,7 @@ class RandomRotate(object):
 
 
 @TRANSFORMS.register_module()
+# 随机旋转（目标角度）
 class RandomRotateTargetAngle(object):
     def __init__(
         self, angle=(1 / 2, 1, 3 / 2), center=None, axis="z", always_apply=False, p=0.75
@@ -309,6 +323,7 @@ class RandomRotateTargetAngle(object):
 
 
 @TRANSFORMS.register_module()
+# 随机缩放
 class RandomScale(object):
     def __init__(self, scale=None, anisotropic=False):
         self.scale = scale if scale is not None else [0.95, 1.05]
@@ -324,6 +339,7 @@ class RandomScale(object):
 
 
 @TRANSFORMS.register_module()
+# 随机翻转
 class RandomFlip(object):
     def __init__(self, p=0.5):
         self.p = p
@@ -343,6 +359,7 @@ class RandomFlip(object):
 
 
 @TRANSFORMS.register_module()
+# 随机抖动
 class RandomJitter(object):
     def __init__(self, sigma=0.01, clip=0.05):
         assert clip > 0
@@ -361,6 +378,7 @@ class RandomJitter(object):
 
 
 @TRANSFORMS.register_module()
+# 高斯抖动
 class ClipGaussianJitter(object):
     def __init__(self, scalar=0.02, store_jitter=False):
         self.scalar = scalar
@@ -382,6 +400,7 @@ class ClipGaussianJitter(object):
 
 
 @TRANSFORMS.register_module()
+# 颜色对比度增强
 class ChromaticAutoContrast(object):
     def __init__(self, p=0.2, blend_factor=None):
         self.p = p
@@ -403,6 +422,7 @@ class ChromaticAutoContrast(object):
 
 
 @TRANSFORMS.register_module()
+# 颜色随机平移
 class ChromaticTranslation(object):
     def __init__(self, p=0.95, ratio=0.05):
         self.p = p
@@ -416,6 +436,7 @@ class ChromaticTranslation(object):
 
 
 @TRANSFORMS.register_module()
+# 颜色随机抖动
 class ChromaticJitter(object):
     def __init__(self, p=0.95, std=0.005):
         self.p = p
@@ -432,6 +453,7 @@ class ChromaticJitter(object):
 
 
 @TRANSFORMS.register_module()
+# 随机颜色灰度化
 class RandomColorGrayScale(object):
     def __init__(self, p):
         self.p = p
@@ -464,6 +486,7 @@ class RandomColorGrayScale(object):
 
 
 @TRANSFORMS.register_module()
+# 随机颜色抖动
 class RandomColorJitter(object):
     """
     Random Color Jitter for 3D point cloud (refer torchvision)
@@ -648,6 +671,7 @@ class RandomColorJitter(object):
 
 
 @TRANSFORMS.register_module()
+# 随机颜色饱和度
 class HueSaturationTranslation(object):
     @staticmethod
     def rgb_to_hsv(rgb):
@@ -716,6 +740,7 @@ class HueSaturationTranslation(object):
 
 
 @TRANSFORMS.register_module()
+# 随机颜色丢弃
 class RandomColorDrop(object):
     def __init__(self, p=0.2, color_augment=0.0):
         self.p = p
@@ -733,6 +758,7 @@ class RandomColorDrop(object):
 
 
 @TRANSFORMS.register_module()
+# 弹性失真，模拟自然变形
 class ElasticDistortion(object):
     def __init__(self, distortion_params=None):
         self.distortion_params = (
@@ -931,6 +957,7 @@ class GridSample(object):
 
 
 @TRANSFORMS.register_module()
+# 球体裁剪
 class SphereCrop(object):
     def __init__(self, point_max=80000, sample_rate=None, mode="random"):
         self.point_max = point_max
@@ -963,6 +990,7 @@ class SphereCrop(object):
 
 
 @TRANSFORMS.register_module()
+# 顺序打乱
 class ShufflePoint(object):
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
