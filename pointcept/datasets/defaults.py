@@ -204,6 +204,7 @@ class DefaultDataset(Dataset):
 
 
 @DATASETS.register_module()
+# 数据集拼接加载器，用于多数据集联合训练
 class ConcatDataset(Dataset):
     def __init__(self, datasets, loop=1):
         super(ConcatDataset, self).__init__()
