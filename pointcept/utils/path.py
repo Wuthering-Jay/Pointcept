@@ -5,11 +5,11 @@ from pathlib import Path
 
 from .misc import is_str
 
-
+# 判断输入是否为字符串或路径对象
 def is_filepath(x):
     return is_str(x) or isinstance(x, Path)
 
-
+# 根据输入（字符串或路径对象）打开文件
 def fopen(filepath, *args, **kwargs):
     if is_str(filepath):
         return open(filepath, *args, **kwargs)
@@ -17,25 +17,25 @@ def fopen(filepath, *args, **kwargs):
         return filepath.open(*args, **kwargs)
     raise ValueError("`filepath` should be a string or a Path")
 
-
+# 检查文件是否存在
 def check_file_exist(filename, msg_tmpl='file "{}" does not exist'):
     if not osp.isfile(filename):
         raise FileNotFoundError(msg_tmpl.format(filename))
 
-
+# 创建目录
 def mkdir_or_exist(dir_name, mode=0o777):
     if dir_name == "":
         return
     dir_name = osp.expanduser(dir_name)
     os.makedirs(dir_name, mode=mode, exist_ok=True)
 
-
+# 符号链接，windows下会有权限问题
 def symlink(src, dst, overwrite=True, **kwargs):
     if os.path.lexists(dst) and overwrite:
         os.remove(dst)
     os.symlink(src, dst, **kwargs)
 
-
+# 扫描目录，查找感兴趣的文件
 def scandir(dir_path, suffix=None, recursive=False, case_sensitive=True):
     """Scan a directory to find the interested files.
 
@@ -81,7 +81,7 @@ def scandir(dir_path, suffix=None, recursive=False, case_sensitive=True):
 
     return _scandir(dir_path, suffix, recursive, case_sensitive)
 
-
+# 向上查找包含特定标记（如 .git）的目录，常用于确定项目根目录。
 def find_vcs_root(path, markers=(".git",)):
     """Finds the root directory (including itself) of specified markers.
 

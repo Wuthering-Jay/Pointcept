@@ -9,6 +9,7 @@ import torch
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.registry import Registry
 
+# 建立一个优化器注册表
 OPTIMIZERS = Registry("optimizers")
 
 

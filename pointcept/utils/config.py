@@ -29,7 +29,7 @@ DELETE_KEY = "_delete_"
 DEPRECATION_KEY = "_deprecation_"
 RESERVED_KEYS = ["filename", "text", "pretty_text"]
 
-
+# 访问字典中的键值对，继承自 Dict
 class ConfigDict(Dict):
     def __missing__(self, name):
         raise KeyError(name)
@@ -48,6 +48,7 @@ class ConfigDict(Dict):
         raise ex
 
 
+# 将配置字典 cfg 转换为命令行参数 parser
 def add_args(parser, cfg, prefix=""):
     for k, v in cfg.items():
         if isinstance(v, str):
@@ -69,7 +70,7 @@ def add_args(parser, cfg, prefix=""):
 
 class Config:
     """A facility for config and config files.
-
+    配置文件的读取和解析
     It supports common file formats as configs: python/json/yaml. The interface
     is the same as a dict object and also allows access config values as
     attributes.
@@ -331,6 +332,7 @@ class Config:
         return b
 
     @staticmethod
+    # 从文件中读取配置
     def fromfile(filename, use_predefined_variables=True, import_custom_modules=True):
         cfg_dict, cfg_text = Config._file2dict(filename, use_predefined_variables)
         if import_custom_modules and cfg_dict.get("custom_imports", None):
@@ -338,6 +340,7 @@ class Config:
         return Config(cfg_dict, cfg_text=cfg_text, filename=filename)
 
     @staticmethod
+    # 从字符串中读取配置
     def fromstring(cfg_str, file_format):
         """Generate config from config str.
 
@@ -405,6 +408,7 @@ class Config:
         return self._text
 
     @property
+    # 返回配置文件的文本
     def pretty_text(self):
         indent = 4
 
@@ -531,6 +535,7 @@ class Config:
         super(Config, self).__setattr__("_filename", _filename)
         super(Config, self).__setattr__("_text", _text)
 
+    # 导出配置文件
     def dump(self, file=None):
         cfg_dict = super(Config, self).__getattribute__("_cfg_dict").to_dict()
         if self.filename.endswith(".py"):
@@ -596,7 +601,7 @@ class Config:
             ),
         )
 
-
+# 将命令行参数解析为字典
 class DictAction(Action):
     """
     argparse action to split an argument into KEY=VALUE form

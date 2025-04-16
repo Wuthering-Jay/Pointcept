@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from importlib import import_module
 
-
+# 均值记录器
 class AverageMeter(object):
     """Computes and stores the average and current value"""
 
@@ -34,15 +34,19 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-
+# 计算交集和并集，支持输入形状为 N 或 N * L 或 N * H * W
 def intersection_and_union(output, target, K, ignore_index=-1):
     # 'K' classes, output and target sizes are N or N * L or N * H * W, each value in range 0 to K - 1.
+    # 支持三个维度
     assert output.ndim in [1, 2, 3]
     assert output.shape == target.shape
+    # 展平数据
     output = output.reshape(output.size).copy()
     target = target.reshape(target.size)
+    # 忽略特定索引
     output[np.where(target == ignore_index)[0]] = ignore_index
     intersection = output[np.where(output == target)[0]]
+    # 交集、结果、目标的每个类出现次数
     area_intersection, _ = np.histogram(intersection, bins=np.arange(K + 1))
     area_output, _ = np.histogram(output, bins=np.arange(K + 1))
     area_target, _ = np.histogram(target, bins=np.arange(K + 1))
@@ -64,12 +68,12 @@ def intersection_and_union_gpu(output, target, k, ignore_index=-1):
     area_union = area_output + area_target - area_intersection
     return area_intersection, area_union, area_target
 
-
+# 创建目录
 def make_dirs(dir_name):
     if not os.path.exists(dir_name):
         os.makedirs(dir_name, exist_ok=True)
 
-
+# 查找端口，分布式训练时使用
 def find_free_port():
     import socket
 
@@ -81,7 +85,7 @@ def find_free_port():
     # NOTE: there is still a chance the port could be taken by other processes.
     return port
 
-
+# 检查序列是否为某种类型
 def is_seq_of(seq, expected_type, seq_type=None):
     """Check whether it is a sequence of some type.
 
@@ -113,7 +117,7 @@ def is_str(x):
     """
     return isinstance(x, str)
 
-
+# 从字符串中导入模块
 def import_modules_from_strings(imports, allow_failed_imports=False):
     """Import modules from the given list of strings.
 

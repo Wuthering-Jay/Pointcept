@@ -13,6 +13,7 @@ import torch.backends.cudnn as cudnn
 
 from datetime import datetime
 
+# 设置随机种子
 
 def get_random_seed():
     seed = (

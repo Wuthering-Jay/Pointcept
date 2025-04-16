@@ -9,6 +9,7 @@ import numpy as np
 import torch.optim.lr_scheduler as lr_scheduler
 from .registry import Registry
 
+# 建立一个调度器注册表
 SCHEDULERS = Registry("schedulers")
 
 
