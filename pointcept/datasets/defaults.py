@@ -38,7 +38,7 @@ class DefaultDataset(Dataset):
 
     def __init__(
         self,
-        split="train", # 数据集划分
+        split="train", # 数据集划分，这里仅用于数据查找
         data_root="data/dataset", # 数据集根目录
         transform=None, # 数据增强
         test_mode=False, # 是否测试模式

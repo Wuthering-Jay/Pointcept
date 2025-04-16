@@ -820,6 +820,7 @@ class ElasticDistortion(object):
 
 
 @TRANSFORMS.register_module()
+# 体素网格采样
 class GridSample(object):
     def __init__(
         self,
@@ -844,17 +845,22 @@ class GridSample(object):
 
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
+        # 计算规则化坐标
         scaled_coord = data_dict["coord"] / np.array(self.grid_size)
         grid_coord = np.floor(scaled_coord).astype(int)
+        # 计算最小网格坐标，归一化
         min_coord = grid_coord.min(0)
         grid_coord -= min_coord
         scaled_coord -= min_coord
         min_coord = min_coord * np.array(self.grid_size)
+        # 获取规则坐标哈希值并排序
         key = self.hash(grid_coord)
         idx_sort = np.argsort(key)
         key_sort = key[idx_sort]
+        # 计算网格索引和点数统计
         _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
         if self.mode == "train":  # train mode
+            # 格网中随机采样
             idx_select = (
                 np.cumsum(np.insert(count, 0, 0)[0:-1])
                 + np.random.randint(0, count.max(), count.size) % count
@@ -869,14 +875,17 @@ class GridSample(object):
                 mask[data_dict["sampled_index"]] = True
                 data_dict["sampled_index"] = np.where(mask[idx_unique])[0]
             data_dict = index_operator(data_dict, idx_unique)
+            # 若需返回逆索引 return_inverse，记录每个点在原始数据中的归属
             if self.return_inverse:
                 data_dict["inverse"] = np.zeros_like(inverse)
                 data_dict["inverse"][idx_sort] = inverse
+            # 记录网格坐标和最小坐标
             if self.return_grid_coord:
                 data_dict["grid_coord"] = grid_coord[idx_unique]
                 data_dict["index_valid_keys"].append("grid_coord")
             if self.return_min_coord:
                 data_dict["min_coord"] = min_coord.reshape([1, 3])
+            # 点在网格内的位置和法线上的距离
             if self.return_displacement:
                 displacement = (
                     scaled_coord - grid_coord - 0.5
@@ -891,6 +900,7 @@ class GridSample(object):
 
         elif self.mode == "test":  # test mode
             data_part_list = []
+            # 循环采样，避免遗漏
             for i in range(count.max()):
                 idx_select = np.cumsum(np.insert(count, 0, 0)[0:-1]) + i % count
                 idx_part = idx_sort[idx_select]
@@ -920,6 +930,7 @@ class GridSample(object):
             raise NotImplementedError
 
     @staticmethod
+    # 适用于范围已知，密集格网
     def ravel_hash_vec(arr):
         """
         Ravel the coordinates after subtracting the min coordinates.
@@ -939,6 +950,7 @@ class GridSample(object):
         return keys
 
     @staticmethod
+    # 适用于范围未知或较大，稀疏格网
     def fnv_hash_vec(arr):
         """
         FNV64-1A
@@ -1202,7 +1214,9 @@ class InstanceParser(object):
         return data_dict
 
 
+# 组合变换类
 class Compose(object):
+
     def __init__(self, cfg=None):
         self.cfg = cfg if cfg is not None else []
         self.transforms = []
