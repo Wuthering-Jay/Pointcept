@@ -13,7 +13,8 @@ class Grouping(Function):
         """
         assert input.is_contiguous() and idx.is_contiguous()
         m, nsample, n, c = idx.shape[0], idx.shape[1], input.shape[0], input.shape[1]
-        output = torch.cuda.FloatTensor(m, nsample, c)
+        # output = torch.cuda.FloatTensor(m, nsample, c)
+        output= torch.zeros(m, nsample, c, device='cuda', dtype=torch.float)
         grouping_forward_cuda(m, nsample, c, input, idx, output)
         ctx.n = n
         ctx.save_for_backward(idx)
@@ -28,7 +29,8 @@ class Grouping(Function):
         n = ctx.n
         (idx,) = ctx.saved_tensors
         m, nsample, c = grad_output.shape
-        grad_input = torch.cuda.FloatTensor(n, c).zero_()
+        # grad_input = torch.cuda.FloatTensor(n, c).zero_()
+        grad_input = torch.zeros(n, c, device='cuda', dtype=torch.float)
         grouping_backward_cuda(m, nsample, c, grad_output, idx, grad_input)
         return grad_input, None
 

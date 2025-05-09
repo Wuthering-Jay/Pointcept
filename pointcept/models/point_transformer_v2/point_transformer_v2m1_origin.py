@@ -20,7 +20,6 @@ import pointops
 from pointcept.models.builder import MODELS
 from pointcept.models.utils import offset2batch, batch2offset
 
-
 class GroupedLinear(nn.Module):
     __constants__ = ["in_features", "out_features", "groups"]
     in_features: int
