@@ -9,8 +9,8 @@ import os
 import numpy as np
 import glob
 
-from .builder import DATASETS
-from .defaults import DefaultDataset
+from ..builder import DATASETS
+from ..defaults import DefaultDataset
 
 
 @DATASETS.register_module()

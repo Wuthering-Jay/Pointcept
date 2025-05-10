@@ -8,8 +8,8 @@ Please cite our work if the code is helpful to you.
 import glob
 import os
 from collections.abc import Sequence
-from .builder import DATASETS
-from .defaults import DefaultDataset
+from ..builder import DATASETS
+from ..defaults import DefaultDataset
 
 
 @DATASETS.register_module()

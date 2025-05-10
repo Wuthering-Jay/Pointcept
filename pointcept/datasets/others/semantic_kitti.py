@@ -8,8 +8,8 @@ Please cite our work if the code is helpful to you.
 import os
 import numpy as np
 
-from .builder import DATASETS
-from .defaults import DefaultDataset
+from ..builder import DATASETS
+from ..defaults import DefaultDataset
 
 
 @DATASETS.register_module()

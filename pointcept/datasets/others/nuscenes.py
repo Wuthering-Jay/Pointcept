@@ -10,8 +10,8 @@ import numpy as np
 from collections.abc import Sequence
 import pickle
 
-from .builder import DATASETS
-from .defaults import DefaultDataset
+from ..builder import DATASETS
+from ..defaults import DefaultDataset
 
 
 @DATASETS.register_module()

@@ -11,8 +11,8 @@ import glob
 
 from pointcept.utils.cache import shared_dict
 
-from .builder import DATASETS
-from .defaults import DefaultDataset
+from ..builder import DATASETS
+from ..defaults import DefaultDataset
 
 
 @DATASETS.register_module()

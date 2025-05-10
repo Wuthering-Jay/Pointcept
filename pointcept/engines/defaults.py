@@ -55,7 +55,7 @@ def worker_init_fn(worker_id, num_workers, rank, seed):
         seed (int): The random seed to use.
     """
 
-    worker_seed = None if seed is None else num_workers * rank + worker_id + seed
+    worker_seed = None if seed is None else seed
     set_seed(worker_seed)
 
 
@@ -147,6 +147,6 @@ def default_setup(cfg):
     assert cfg.epoch % cfg.eval_epoch == 0
     # settle random seed
     rank = comm.get_rank()
-    seed = None if cfg.seed is None else cfg.seed + rank * cfg.num_worker_per_gpu
+    seed = None if cfg.seed is None else cfg.seed
     set_seed(seed)
     return cfg

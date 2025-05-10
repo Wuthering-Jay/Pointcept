@@ -6,8 +6,8 @@ Please cite our work if the code is helpful to you.
 """
 
 import os
-from .defaults import DefaultDataset
-from .builder import DATASETS
+from ..defaults import DefaultDataset
+from ..builder import DATASETS
 
 
 @DATASETS.register_module()

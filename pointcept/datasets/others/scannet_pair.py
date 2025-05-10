@@ -15,8 +15,8 @@ from copy import deepcopy
 from torch.utils.data import Dataset
 
 from pointcept.utils.logger import get_root_logger
-from .builder import DATASETS
-from .transform import Compose, TRANSFORMS
+from ..builder import DATASETS
+from ..transform import Compose, TRANSFORMS
 
 
 @DATASETS.register_module()

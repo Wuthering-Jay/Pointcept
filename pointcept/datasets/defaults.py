@@ -38,10 +38,10 @@ class DefaultDataset(Dataset):
 
     def __init__(
         self,
-        split="train", # 数据集划分，这里仅用于数据查找
+        split="train", # 数据集划分，这里仅用于数据查找，即位于data_root下的哪个子文件中
         data_root="data/dataset", # 数据集根目录
         transform=None, # 数据增强
-        test_mode=False, # 是否测试模式
+        test_mode=False, # 是否测试模式，该模式下，loop固定为1，启用test数据增强
         test_cfg=None, # 测试配置
         cache=False, # 是否使用缓存数据
         ignore_index=-1, # 忽略的语义索引
@@ -84,15 +84,22 @@ class DefaultDataset(Dataset):
 
         data_list = []
         for split in split_list:
-            # 若 data_root/split 为文件，则读取该文件
-            if os.path.isfile(os.path.join(self.data_root, split)):
-                with open(os.path.join(self.data_root, split)) as f:
+            split_path = os.path.join(self.data_root, split)
+            if os.path.isfile(split_path):
+                with open(split_path) as f:
                     data_list += [
                         os.path.join(self.data_root, data) for data in json.load(f)
                     ]
-            # 若 data_root/split 为目录，则读取该目录下的所有文件
+            elif os.path.isdir(split_path):
+                # 获取指定目录下的所有条目
+                all_entries = os.listdir(split_path)
+                # 遍历所有条目，筛选出子文件夹
+                for entry in all_entries:
+                    entry_path = os.path.join(split_path, entry)
+                    if os.path.isdir(entry_path):
+                        data_list.append(entry_path)
             else:
-                data_list += glob.glob(os.path.join(self.data_root, split, "*"))
+                raise ValueError(f"Invalid path: {split_path}")
         return data_list
 
     def get_data(self, idx):
