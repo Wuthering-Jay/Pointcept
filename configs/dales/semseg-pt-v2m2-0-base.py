@@ -7,6 +7,7 @@ empty_cache = False
 empty_cache_per_epoch = True
 enable_amp = True
 save_path = "exp/dales/semseg-pt-v2m2-0-base"
+weight = "exp/dales/semseg-pt-v2m2-0-base/model/model_last.pth"
 
 # model settings
 model = dict(
