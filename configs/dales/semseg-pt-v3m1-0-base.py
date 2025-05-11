@@ -1,9 +1,10 @@
 _base_ = ["../_base_/default_runtime.py",]
 
 # misc custom setting
-batch_size = 2  # bs: total bs in all gpus
+batch_size = 4  # bs: total bs in all gpus
 mix_prob = 0
-empty_cache = True
+empty_cache = False
+empty_cache_per_epoch = True
 enable_amp = False
 save_path = "exp/dales/semseg-pt-v3m1-0-base"
 
@@ -34,7 +35,7 @@ model = dict(
         shuffle_orders=True,
         pre_norm=True,
         enable_rpe=False,
-        enable_flash=False,
+        enable_flash=True,
         upcast_attention=False,
         upcast_softmax=False,
         cls_mode=False,
@@ -45,9 +46,9 @@ model = dict(
         pdnorm_affine=True,
         pdnorm_conditions=("PointCloudDataset"),
     ),
-    criteria=[
+     criteria=[
         dict(type="CrossEntropyLoss",
-             weight=[0.2539, 0.3741, 1.5005, 6.3676, 5.5190, 2.8816, 13.2533, 0.7944],
+             weight=[0.00059, 0.00099, 0.03855, 0.26774, 0.17911, 0.06613, 0.44509, 0.00175],
              loss_weight=1.0,
              ignore_index=-1),
         dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
@@ -66,7 +67,7 @@ scheduler = dict(
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root="/home/jay/data/dales/npy"
+data_root = "E:\\data\\Dales\\dales_las\\npy"
 
 ignore_index = -1
 names=["ground",
@@ -121,7 +122,7 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        split="test",
+        split="train",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=False),
@@ -158,7 +159,7 @@ data = dict(
     ),
     test=dict(
         type=dataset_type,
-        split="test",
+        split="train",
         data_root=data_root,
         transform=[dict(type="CenterShift", apply_z=False),],
         test_mode=True,
