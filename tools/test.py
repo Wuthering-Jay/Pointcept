@@ -1,12 +1,8 @@
-"""
-Main Testing Script
-
-Author: Xiaoyang Wu (xiaoyang.wu.cs@gmail.com)
-Please cite our work if the code is helpful to you.
-"""
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pointcept.engines.defaults import (
-    default_argument_parser,
     default_config_parser,
     default_setup,
 )
@@ -26,7 +22,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-    config_file = "configs/pointnet2/pointnet2_cls.py"
+    config_file = "configs/dales/semseg-pt-v2m2-0-base.py"
     options = None
     
     cfg = default_config_parser(config_file, options)

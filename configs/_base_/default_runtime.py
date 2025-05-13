@@ -17,7 +17,7 @@ sync_bn = False
 enable_amp = False
 amp_dtype = "float16"
 empty_cache = False
-empty_cache_per_epoch = False
+empty_cache_per_epoch = True
 find_unused_parameters = False
 
 mix_prob = 0

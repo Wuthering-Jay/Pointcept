@@ -1,13 +1,15 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-batch_size = 3  # bs: total bs in all gpus
+resume = True
+evaluate=False
+batch_size = 2  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_per_epoch = True
 enable_amp = True
 save_path = "exp/dales/semseg-pt-v2m2-0-base"
-weight = "exp/dales/semseg-pt-v2m2-0-base/model/model_last.pth"
+weight = "exp/dales/semseg-pt-v2m2-0-base/model/model_best.pth"
 
 # model settings
 model = dict(
