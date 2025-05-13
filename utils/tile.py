@@ -623,10 +623,10 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
 if __name__ == "__main__":
     
     input_path=r"E:\data\Dales\dales_las\test"
-    output_dir=r"E:\data\Dales\dales_las\npy\train"
+    output_dir=r"E:\data\Dales\dales_las\npy\test"
     window_size=(50., 50.)
     min_points=4096
-    max_points=32768
+    max_points=65536
     ignore_labels=[0]
     label_remap=True
     label_count=True
