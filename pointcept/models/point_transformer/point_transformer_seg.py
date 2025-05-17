@@ -43,11 +43,15 @@ class PointTransformerLayer(nn.Module):
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, pxo) -> torch.Tensor:
+        """
+        input: pxo: (n, 3), (n, c), (b)
+        output: x: (n, out_planes)
+        """
         p, x, o = pxo  # (n, 3), (n, c), (b)
-        x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)
+        x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x) # (n, mid), (n, mid), (n, out)
         x_k, idx = pointops.knn_query_and_group(
             x_k, p, o, new_xyz=p, new_offset=o, nsample=self.nsample, with_xyz=True
-        )
+        ) # (n, nsample, 3+mid), (n, nsample)
         x_v, _ = pointops.knn_query_and_group(
             x_v,
             p,
@@ -57,24 +61,24 @@ class PointTransformerLayer(nn.Module):
             idx=idx,
             nsample=self.nsample,
             with_xyz=False,
-        )
-        p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
-        p_r = self.linear_p(p_r)
+        ) # (n, nsample, out)
+        p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:] # (n, nsample, 3), (n, nsample, mid)
+        p_r = self.linear_p(p_r) # (n, nsample, out)
         r_qk = (
-            x_k
-            - x_q.unsqueeze(1)
+            x_k # (n, nsample, mid)
+            - x_q.unsqueeze(1) # (n, 1, mid)
             + einops.reduce(
-                p_r, "n ns (i j) -> n ns j", reduction="sum", j=self.mid_planes
-            )
+                p_r, "n ns (i j) -> n ns j", reduction="sum", j=self.mid_planes # (n, nsample, mid)
+            ) # (n, nsample, mid)
         )
         w = self.linear_w(r_qk)  # (n, nsample, c)
-        w = self.softmax(w)
+        w = self.softmax(w) # (n, nsample, c)
         x = torch.einsum(
             "n t s i, n t i -> n s i",
-            einops.rearrange(x_v + p_r, "n ns (s i) -> n ns s i", s=self.share_planes),
+            einops.rearrange(x_v + p_r, "n ns (s i) -> n ns s i", s=self.share_planes), # (n, nsample, out) -> (n, nsample, share, out/share)
             w,
-        )
-        x = einops.rearrange(x, "n s i -> n (s i)")
+        ) # (n, share, out/share)
+        x = einops.rearrange(x, "n s i -> n (s i)") # (n, out)
         return x
 
 
@@ -91,13 +95,17 @@ class TransitionDown(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, pxo):
+        """
+        input: pxo: (n, 3), (n, c), (b)
+        output: pxo: (m, 3), (m, out), (b)
+        """
         p, x, o = pxo  # (n, 3), (n, c), (b)
         if self.stride != 1:
             n_o, count = [o[0].item() // self.stride], o[0].item() // self.stride
             for i in range(1, o.shape[0]):
                 count += (o[i].item() - o[i - 1].item()) // self.stride
                 n_o.append(count)
-            n_o = torch.cuda.IntTensor(n_o)
+            n_o = torch.cuda.IntTensor(n_o) # 降采样的 offset
             idx = pointops.farthest_point_sampling(p, o, n_o)  # (m)
             n_p = p[idx.long(), :]  # (m, 3)
             x, _ = pointops.knn_query_and_group(
@@ -108,14 +116,14 @@ class TransitionDown(nn.Module):
                 new_offset=n_o,
                 nsample=self.nsample,
                 with_xyz=True,
-            )
+            ) # (m, nsample, 3+c)
             x = self.relu(
                 self.bn(self.linear(x).transpose(1, 2).contiguous())
-            )  # (m, c, nsample)
-            x = self.pool(x).squeeze(-1)  # (m, c)
-            p, o = n_p, n_o
+            )  # (m, out, nsample)
+            x = self.pool(x).squeeze(-1)  # (m, out)
+            p, o = n_p, n_o # (m, 3), (b)
         else:
-            x = self.relu(self.bn(self.linear(x)))  # (n, c)
+            x = self.relu(self.bn(self.linear(x)))  # (n, out)
         return [p, x, o]
 
 
@@ -147,12 +155,12 @@ class TransitionUp(nn.Module):
         if pxo2 is None:
             _, x, o = pxo1  # (n, 3), (n, c), (b)
             x_tmp = []
-            for i in range(o.shape[0]):
+            for i in range(o.shape[0]): # 逐offset
                 if i == 0:
-                    s_i, e_i, cnt = 0, o[0], o[0]
+                    s_i, e_i, cnt = 0, o[0], o[0] # start, end, count
                 else:
                     s_i, e_i, cnt = o[i - 1], o[i], o[i] - o[i - 1]
-                x_b = x[s_i:e_i, :]
+                x_b = x[s_i:e_i, :] # (cnt, c)
                 x_b = torch.cat(
                     (x_b, self.linear2(x_b.sum(0, True) / cnt).repeat(cnt, 1)), 1
                 )
@@ -160,11 +168,11 @@ class TransitionUp(nn.Module):
             x = torch.cat(x_tmp, 0)
             x = self.linear1(x)
         else:
-            p1, x1, o1 = pxo1
-            p2, x2, o2 = pxo2
+            p1, x1, o1 = pxo1 # (n, 3), (n, c), (b)
+            p2, x2, o2 = pxo2 # (m, 3), (m, c), (b)
             x = self.linear1(x1) + pointops.interpolation(
-                p2, p1, self.linear2(x2), o2, o1
-            )
+                p2, p1, self.linear2(x2), o2, o1 # 默认为3个临近点插值
+            ) # (n, c)
         return x
 
 
