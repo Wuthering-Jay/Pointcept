@@ -171,7 +171,7 @@ class LASMerger:
             merged_las.crs = first_segment.crs
         
         # Save merged file
-        output_path = self.output_dir / f"{original_name}_merged.las"
+        output_path = self.output_dir / f"{original_name}.las"
         merged_las.write(output_path)
         print(f"  Saved merged file to {output_path}")
     
@@ -364,7 +364,7 @@ class LASMerger:
             point_offset += segment_points
         
         # Save merged file
-        output_path = self.output_dir / f"{original_name}_merged.las"
+        output_path = self.output_dir / f"{original_name}.las"
         merged_las.write(output_path)
         print(f"  Saved merged file to {output_path}")
 
@@ -397,11 +397,11 @@ def merge_las_segments(input_path, output_dir=None, input_format="las",
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\Dales\dales_las\npy\train"
-    output_dir=r"E:\data\Dales\dales_las\pred"
+    input_path=r"E:\data\jzg\npy\train"
+    output_dir=r"E:\data\jzg\pred"
     input_format="npy"
     label_file="pred"
-    label_remap_file=r"E:\data\Dales\dales_las\npy\train\label_mapping.json"
+    label_remap_file=r"E:\data\jzg\npy\train\label_mapping.json"
     template_las_file=None
     
     merge_las_segments(

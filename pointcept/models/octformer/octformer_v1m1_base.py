@@ -34,7 +34,7 @@ from pointcept.models.utils import offset2batch
 class OctreeT(Octree):
     def __init__(
         self,
-        octree: Octree,
+        octree,
         patch_size: int = 24,
         dilation: int = 4,
         nempty: bool = True,
@@ -154,7 +154,7 @@ class OctreeDWConvBn(torch.nn.Module):
         )
         self.bn = torch.nn.BatchNorm1d(in_channels)
 
-    def forward(self, data: torch.Tensor, octree: Octree, depth: int):
+    def forward(self, data: torch.Tensor, octree, depth: int):
         out = self.conv(data, octree, depth)
         out = self.bn(out)
         return out
@@ -408,7 +408,7 @@ class OctFormerDecoder(torch.nn.Module):
             ]
         )
 
-    def forward(self, features: Dict[int, torch.Tensor], octree: Octree):
+    def forward(self, features: Dict[int, torch.Tensor], octree):
         depth = min(features.keys())
         depth_max = max(features.keys())
         assert self.num_stages == len(features)
@@ -469,7 +469,7 @@ class PatchEmbed(torch.nn.Module):
             channels[-1], dim, kernel_size=[3], stride=1, nempty=nempty
         )
 
-    def forward(self, data: torch.Tensor, octree: Octree, depth: int):
+    def forward(self, data: torch.Tensor, octree, depth: int):
         # TODO: reduce to single input
         for i in range(self.num_stages):
             depth_i = depth - i
@@ -498,7 +498,7 @@ class Downsample(torch.nn.Module):
             use_bias=True,
         )
 
-    def forward(self, data: torch.Tensor, octree: Octree, depth: int):
+    def forward(self, data: torch.Tensor, octree, depth: int):
         data = self.conv(data, octree, depth)
         data = self.norm(data)
         return data

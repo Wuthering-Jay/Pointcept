@@ -167,55 +167,55 @@ class SemSegTester(TesterBase):
             print(f"Rank {comm.get_rank()}, Data {data_name}")
             # pred_save_path = os.path.join(save_path, "{}_pred.npy".format(data_name))
             pred_save_path=os.path.join(self.cfg.data_root,self.cfg.data.test.split,str(data_name),"pred.npy")
-            if os.path.isfile(pred_save_path):
+            # if os.path.isfile(pred_save_path):
+            #     logger.info(
+            #         "{}/{}: {}, loaded pred and label.".format(
+            #             idx + 1, len(self.test_loader), data_name
+            #         )
+            #     )
+            #     pred = np.load(pred_save_path)
+            #     if "origin_segment" in data_dict.keys():
+            #         segment = data_dict["origin_segment"]
+            # else:
+            pred = torch.zeros((segment.size, self.cfg.data.num_classes)).cuda()
+            for i in range(len(fragment_list)):
+                fragment_batch_size = 1
+                s_i, e_i = i * fragment_batch_size, min(
+                    (i + 1) * fragment_batch_size, len(fragment_list)
+                )
+                input_dict = collate_fn(fragment_list[s_i:e_i])
+                for key in input_dict.keys():
+                    if isinstance(input_dict[key], torch.Tensor):
+                        input_dict[key] = input_dict[key].cuda(non_blocking=True)
+                idx_part = input_dict["index"]
+                with torch.no_grad():
+                    pred_part = self.model(input_dict)["seg_logits"]  # (n, k)
+                    pred_part = F.softmax(pred_part, -1)
+                    if self.cfg.empty_cache:
+                        torch.cuda.empty_cache()
+                    bs = 0
+                    for be in input_dict["offset"]:
+                        pred[idx_part[bs:be], :] += pred_part[bs:be]
+                        bs = be
+
                 logger.info(
-                    "{}/{}: {}, loaded pred and label.".format(
-                        idx + 1, len(self.test_loader), data_name
+                    "Test: {}/{}-{data_name}, Batch: {batch_idx}/{batch_num}".format(
+                        idx + 1,
+                        len(self.test_loader),
+                        data_name=data_name,
+                        batch_idx=i,
+                        batch_num=len(fragment_list),
                     )
                 )
-                pred = np.load(pred_save_path)
-                if "origin_segment" in data_dict.keys():
-                    segment = data_dict["origin_segment"]
+            if self.cfg.data.test.type == "ScanNetPPDataset":
+                pred = pred.topk(3, dim=1)[1].data.cpu().numpy()
             else:
-                pred = torch.zeros((segment.size, self.cfg.data.num_classes)).cuda()
-                for i in range(len(fragment_list)):
-                    fragment_batch_size = 1
-                    s_i, e_i = i * fragment_batch_size, min(
-                        (i + 1) * fragment_batch_size, len(fragment_list)
-                    )
-                    input_dict = collate_fn(fragment_list[s_i:e_i])
-                    for key in input_dict.keys():
-                        if isinstance(input_dict[key], torch.Tensor):
-                            input_dict[key] = input_dict[key].cuda(non_blocking=True)
-                    idx_part = input_dict["index"]
-                    with torch.no_grad():
-                        pred_part = self.model(input_dict)["seg_logits"]  # (n, k)
-                        pred_part = F.softmax(pred_part, -1)
-                        if self.cfg.empty_cache:
-                            torch.cuda.empty_cache()
-                        bs = 0
-                        for be in input_dict["offset"]:
-                            pred[idx_part[bs:be], :] += pred_part[bs:be]
-                            bs = be
-
-                    logger.info(
-                        "Test: {}/{}-{data_name}, Batch: {batch_idx}/{batch_num}".format(
-                            idx + 1,
-                            len(self.test_loader),
-                            data_name=data_name,
-                            batch_idx=i,
-                            batch_num=len(fragment_list),
-                        )
-                    )
-                if self.cfg.data.test.type == "ScanNetPPDataset":
-                    pred = pred.topk(3, dim=1)[1].data.cpu().numpy()
-                else:
-                    pred = pred.max(1)[1].data.cpu().numpy()
-                if "origin_segment" in data_dict.keys():
-                    assert "inverse" in data_dict.keys()
-                    pred = pred[data_dict["inverse"]]
-                    segment = data_dict["origin_segment"]
-                np.save(pred_save_path, pred)
+                pred = pred.max(1)[1].data.cpu().numpy()
+            if "origin_segment" in data_dict.keys():
+                assert "inverse" in data_dict.keys()
+                pred = pred[data_dict["inverse"]]
+                segment = data_dict["origin_segment"]
+            np.save(pred_save_path, pred)
             if (
                 self.cfg.data.test.type == "ScanNetDataset"
                 or self.cfg.data.test.type == "ScanNet200Dataset"
