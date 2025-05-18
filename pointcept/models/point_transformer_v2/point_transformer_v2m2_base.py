@@ -26,6 +26,7 @@ from pointcept.models.utils import offset2batch, batch2offset
 class PointBatchNorm(nn.Module):
     """
     Batch Normalization for Point Clouds data in shape of [B*N, C], [B*N, L, C]
+    对形状为[B*N, C], [B*N, L, C]的点云数据进行批量归一化
     """
 
     def __init__(self, embed_channels):
@@ -101,6 +102,10 @@ class GroupedVectorAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop_rate)
 
     def forward(self, feat, coord, reference_index):
+        """
+        input: feat: [B*N, C], coord: [B*N, 3], reference_index: [B*N, K]
+        output: feat: [B*N, C]
+        """
         query, key, value = (
             self.linear_q(feat),
             self.linear_k(feat),
