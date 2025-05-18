@@ -17,6 +17,14 @@ from .utils import LayerNorm1d
 
 
 class PointTransformerLayer(nn.Module):
+    """
+    点云变换模块
+    Args:
+        in_planes: 输入特征维度
+        out_planes: 输出特征维度
+        share_planes: 共享特征维度
+        nsample: 每个点采样的点数
+    """
     def __init__(self, in_planes, out_planes, share_planes=8, nsample=16):
         super().__init__()
         self.mid_planes = mid_planes = out_planes // 1
@@ -83,6 +91,14 @@ class PointTransformerLayer(nn.Module):
 
 
 class TransitionDown(nn.Module):
+    """
+    点云降采样模块
+    Args:
+        in_planes: 输入特征维度
+        out_planes: 输出特征维度
+        stride: 降采样率
+        nsample: 每个点采样的点数
+    """
     def __init__(self, in_planes, out_planes, stride=1, nsample=16):
         super().__init__()
         self.stride, self.nsample = stride, nsample
@@ -100,6 +116,7 @@ class TransitionDown(nn.Module):
         output: pxo: (m, 3), (m, out), (b)
         """
         p, x, o = pxo  # (n, 3), (n, c), (b)
+        # stride不为1时，降采样
         if self.stride != 1:
             n_o, count = [o[0].item() // self.stride], o[0].item() // self.stride
             for i in range(1, o.shape[0]):
@@ -122,12 +139,19 @@ class TransitionDown(nn.Module):
             )  # (m, out, nsample)
             x = self.pool(x).squeeze(-1)  # (m, out)
             p, o = n_p, n_o # (m, 3), (b)
+        # stride为1时，直接线性变换
         else:
             x = self.relu(self.bn(self.linear(x)))  # (n, out)
         return [p, x, o]
 
 
 class TransitionUp(nn.Module):
+    """
+    点云上采样模块
+    Args:
+        in_planes: 输入特征维度
+        out_planes: 输出特征维度
+    """
     def __init__(self, in_planes, out_planes=None):
         super().__init__()
         if out_planes is None:
@@ -152,6 +176,12 @@ class TransitionUp(nn.Module):
             )
 
     def forward(self, pxo1, pxo2=None):
+        """
+        input: pxo1: (n, 3), (n, c), (b)
+               pxo2: (m, 3), (m, c), (b)
+        output: x: (n, out_planes)
+        """
+        # pxo2为None时，直接线性变换
         if pxo2 is None:
             _, x, o = pxo1  # (n, 3), (n, c), (b)
             x_tmp = []
@@ -162,11 +192,12 @@ class TransitionUp(nn.Module):
                     s_i, e_i, cnt = o[i - 1], o[i], o[i] - o[i - 1]
                 x_b = x[s_i:e_i, :] # (cnt, c)
                 x_b = torch.cat(
-                    (x_b, self.linear2(x_b.sum(0, True) / cnt).repeat(cnt, 1)), 1
+                    (x_b, self.linear2(x_b.sum(0, True) / cnt).repeat(cnt, 1)), 1 # 点特征 + batch全局特征
                 )
                 x_tmp.append(x_b)
             x = torch.cat(x_tmp, 0)
             x = self.linear1(x)
+        # pxo2不为None时，进行插值
         else:
             p1, x1, o1 = pxo1 # (n, 3), (n, c), (b)
             p2, x2, o2 = pxo2 # (m, 3), (m, c), (b)
@@ -177,6 +208,14 @@ class TransitionUp(nn.Module):
 
 
 class Bottleneck(nn.Module):
+    """
+    Bottleneck block
+    Args:
+        in_planes: 输入特征维度
+        planes: 输出特征维度
+        share_planes: 共享特征维度
+        nsample: 每个点采样的点数
+    """
     expansion = 1
 
     def __init__(self, in_planes, planes, share_planes=8, nsample=16):
@@ -190,17 +229,29 @@ class Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, pxo):
+        """
+        input: pxo: (n, 3), (n, c), (b)
+        output: pxo: (n, 3), (n, c), (b)
+        """
         p, x, o = pxo  # (n, 3), (n, c), (b)
-        identity = x
-        x = self.relu(self.bn1(self.linear1(x)))
-        x = self.relu(self.bn2(self.transformer([p, x, o])))
-        x = self.bn3(self.linear3(x))
-        x += identity
-        x = self.relu(x)
-        return [p, x, o]
+        identity = x # (n, c)
+        x = self.relu(self.bn1(self.linear1(x))) # (n, planes)
+        x = self.relu(self.bn2(self.transformer([p, x, o]))) # (n, planes)
+        x = self.bn3(self.linear3(x)) # (n, planes*expansion)
+        x += identity # (n, c)
+        x = self.relu(x) # (n, c)
+        return [p, x, o] # (n, 3), (n, c), (b)
 
 
 class PointTransformerSeg(nn.Module):
+    """
+    Point Transformer for Semantic Segmentation
+    Args:
+        block: block type, 默认为Bottleneck
+        blocks: block的数量
+        in_channels: 输入特征维度
+        num_classes: 输出类别数
+    """
     def __init__(self, block, blocks, in_channels=6, num_classes=13):
         super().__init__()
         self.in_channels = in_channels
@@ -270,6 +321,15 @@ class PointTransformerSeg(nn.Module):
         )
 
     def _make_enc(self, block, planes, blocks, share_planes=8, stride=1, nsample=16):
+        """
+        Args:
+            block: block type, 默认为Bottleneck
+            planes: 输出特征维度
+            blocks: block的数量
+            share_planes: 共享特征维度
+            stride: 降采样率
+            nsample: 每个点采样的点数
+        """
         layers = [
             TransitionDown(self.in_planes, planes * block.expansion, stride, nsample)
         ]
@@ -283,6 +343,15 @@ class PointTransformerSeg(nn.Module):
     def _make_dec(
         self, block, planes, blocks, share_planes=8, nsample=16, is_head=False
     ):
+        """
+        Args:
+            block: block type, 默认为Bottleneck
+            planes: 输出特征维度
+            blocks: block的数量
+            share_planes: 共享特征维度
+            nsample: 每个点采样的点数
+            is_head: 是否为head
+        """
         layers = [
             TransitionUp(self.in_planes, None if is_head else planes * block.expansion)
         ]
@@ -298,7 +367,7 @@ class PointTransformerSeg(nn.Module):
         x0 = data_dict["feat"]
         o0 = data_dict["offset"].int()
         p1, x1, o1 = self.enc1([p0, x0, o0])
-        p2, x2, o2 = self.enc2([p1, x1, o1])
+        p2, x2, o2 = self.enc2([p1, x1, o1]) 
         p3, x3, o3 = self.enc3([p2, x2, o2])
         p4, x4, o4 = self.enc4([p3, x3, o3])
         p5, x5, o5 = self.enc5([p4, x4, o4])
