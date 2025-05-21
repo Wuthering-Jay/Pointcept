@@ -25,6 +25,18 @@ from pointcept.models.utils import offset2batch, batch2offset
 
 
 class PDBatchNorm(torch.nn.Module):
+    """
+    PDBatchNorm, 融合BatchNorm和条件自适应调整, 适用于多数据集和条件输入场景
+    Args:
+        num_features: 输入特征维度
+        context_channels: 自适应调整时context的输入维度
+        eps: BN的eps
+        momentum: BN的动量参数
+        conditions: 数据集名称了列表
+        decouple: 是否独立维护各个数据集的BN
+        adaptive: 是否启用自适应调整
+        affine: BN是否包含可学习的的仿射参数
+    """
     def __init__(
         self,
         num_features,
@@ -43,7 +55,7 @@ class PDBatchNorm(torch.nn.Module):
         self.affine = affine
         if self.decouple:
             self.bns = nn.ModuleList(
-                [
+                [ # 为每个数据集维护独立的BatchNorm参数
                     nn.BatchNorm1d(
                         num_features=num_features,
                         eps=eps,
@@ -63,6 +75,10 @@ class PDBatchNorm(torch.nn.Module):
             )
 
     def forward(self, feat, condition=None, context=None):
+        """
+        input: feat: [n, c], condtition: [m], context: [n, cc]
+        output: [n, c]
+        """
         if self.decouple:
             assert condition in self.conditions
             bn = self.bns[self.conditions.index(condition)]
@@ -71,6 +87,7 @@ class PDBatchNorm(torch.nn.Module):
         feat = bn(feat)
         if self.adaptive:
             assert context is not None
+            # 通过context动态生成scale和shift, 对归一化特征进行仿射变换
             shift, scale = self.modulation(context).chunk(2, dim=1)
             feat = feat * (1.0 + scale) + shift
         return feat

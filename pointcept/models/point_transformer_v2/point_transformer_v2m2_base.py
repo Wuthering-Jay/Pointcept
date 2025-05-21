@@ -26,7 +26,7 @@ from pointcept.models.utils import offset2batch, batch2offset
 class PointBatchNorm(nn.Module):
     """
     Batch Normalization for Point Clouds data in shape of [B*N, C], [B*N, L, C]
-    对形状为[B*N, C], [B*N, L, C]的点云数据进行批量归一化
+    对形状为[n, c], [n, l, c]的点云数据进行批量归一化
     """
 
     def __init__(self, embed_channels):
@@ -47,6 +47,16 @@ class PointBatchNorm(nn.Module):
 
 
 class GroupedVectorAttention(nn.Module):
+    """
+    分组向量注意力机制
+    Args:
+        embed_channesl: 输入输出维度
+        groups: 分组数量
+        attn_drop_rate: drop比例
+        qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+    """
     def __init__(
         self,
         embed_channels,
@@ -103,38 +113,50 @@ class GroupedVectorAttention(nn.Module):
 
     def forward(self, feat, coord, reference_index):
         """
-        input: feat: [B*N, C], coord: [B*N, 3], reference_index: [B*N, K]
-        output: feat: [B*N, C]
+        input: feat: [n, c], coord: [n, 3], reference_index: [n, k]
+        output: feat: [n, c]
         """
         query, key, value = (
-            self.linear_q(feat),
-            self.linear_k(feat),
-            self.linear_v(feat),
+            self.linear_q(feat), # [n, c]
+            self.linear_k(feat), # [n, c]
+            self.linear_v(feat), # [n, c]
         )
-        key = pointops.grouping(reference_index, key, coord, with_xyz=True)
-        value = pointops.grouping(reference_index, value, coord, with_xyz=False)
-        pos, key = key[:, :, 0:3], key[:, :, 3:]
-        relation_qk = key - query.unsqueeze(1)
-        if self.pe_multiplier:
-            pem = self.linear_p_multiplier(pos)
-            relation_qk = relation_qk * pem
-        if self.pe_bias:
-            peb = self.linear_p_bias(pos)
-            relation_qk = relation_qk + peb
-            value = value + peb
+        key = pointops.grouping(reference_index, key, coord, with_xyz=True) # [n, k, 3+c]
+        value = pointops.grouping(reference_index, value, coord, with_xyz=False) # [n, k, c]
+        pos, key = key[:, :, 0:3], key[:, :, 3:] # [n, k, 3], [n, k, c]
+        relation_qk = key - query.unsqueeze(1) # [n, k ,c], 邻域内与中心点的相对位置, 用于相对位置编码
+        if self.pe_multiplier: # 乘性因子
+            pem = self.linear_p_multiplier(pos) # [n, k, c]
+            relation_qk = relation_qk * pem # [n, k, c]
+        if self.pe_bias: # 偏置因子
+            peb = self.linear_p_bias(pos) # [n, k, c]
+            relation_qk = relation_qk + peb # [n, k, c]
+            value = value + peb # [n, k, c]
 
-        weight = self.weight_encoding(relation_qk)
-        weight = self.attn_drop(self.softmax(weight))
+        weight = self.weight_encoding(relation_qk) # [n, k, g]
+        weight = self.attn_drop(self.softmax(weight)) # [n, k, g]
 
-        mask = torch.sign(reference_index + 1)
-        weight = torch.einsum("n s g, n s -> n s g", weight, mask)
-        value = einops.rearrange(value, "n ns (g i) -> n ns g i", g=self.groups)
-        feat = torch.einsum("n s g i, n s g -> n g i", value, weight)
-        feat = einops.rearrange(feat, "n g i -> n (g i)")
-        return feat
+        mask = torch.sign(reference_index + 1) # [n, k], 无效邻域点标记为0
+        weight = torch.einsum("n s g, n s -> n s g", weight, mask) # [n, k, g]
+        value = einops.rearrange(value, "n ns (g i) -> n ns g i", g=self.groups) # [n, k, g, i]
+        feat = torch.einsum("n s g i, n s g -> n g i", value, weight) # [n, g, i]
+        feat = einops.rearrange(feat, "n g i -> n (g i)") # [n, c]
+        return feat # [n, c]
 
 
 class Block(nn.Module):
+    """
+    网络模块单位，结合GVA和BottleNeck对pxo进行处理，不改变数据维度
+    Args:
+        embed_channesl: 输入输出维度
+        groups: 分组数量
+        qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+        attn_drop_rate: drop比例
+        drop_path_rate: BottleNeck的drop比例
+        enable_checkpoint: checkpoint机制，以时间换空间
+    """
     def __init__(
         self,
         embed_channels,
@@ -167,19 +189,23 @@ class Block(nn.Module):
         )
 
     def forward(self, points, reference_index):
-        coord, feat, offset = points
-        identity = feat
-        feat = self.act(self.norm1(self.fc1(feat)))
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]], reference_index: [n, k]
+        output: [pxo], [[n,3],[n,c],[b]], 不改变维度
+        """
+        coord, feat, offset = points # [n,3], [n,c], [b]
+        identity = feat # [n, c]
+        feat = self.act(self.norm1(self.fc1(feat))) # [n, c]
         feat = (
             self.attn(feat, coord, reference_index)
-            if not self.enable_checkpoint
+            if not self.enable_checkpoint # checkpoint机制，时间换空间，梯度等部分参数不保留，在反向传播时重新计算
             else checkpoint(self.attn, feat, coord, reference_index)
-        )
-        feat = self.act(self.norm2(feat))
-        feat = self.norm3(self.fc3(feat))
-        feat = identity + self.drop_path(feat)
-        feat = self.act(feat)
-        return [coord, feat, offset]
+        ) # [n, c]
+        feat = self.act(self.norm2(feat)) # [n, c]
+        feat = self.norm3(self.fc3(feat)) # [n, c]
+        feat = identity + self.drop_path(feat) # [n, c], bottleneck设计
+        feat = self.act(feat) # [n, c]
+        return [coord, feat, offset] # [[n,3],[n,c],[b]]
 
 
 class BlockSequence(nn.Module):
@@ -198,6 +224,7 @@ class BlockSequence(nn.Module):
     ):
         super(BlockSequence, self).__init__()
 
+        # 确保 drop_path_rates 为 list
         if isinstance(drop_path_rate, list):
             drop_path_rates = drop_path_rate
             assert len(drop_path_rates) == depth
@@ -208,6 +235,7 @@ class BlockSequence(nn.Module):
 
         self.neighbours = neighbours
         self.blocks = nn.ModuleList()
+        # 多个 Block 堆叠
         for i in range(depth):
             block = Block(
                 embed_channels=embed_channels,
@@ -222,10 +250,14 @@ class BlockSequence(nn.Module):
             self.blocks.append(block)
 
     def forward(self, points):
-        coord, feat, offset = points
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]]
+        output: [pxo], [[n,3],[n,c],[b]]
+        """
+        coord, feat, offset = points 
         # reference index query of neighbourhood attention
         # for windows attention, modify reference index query method
-        reference_index, _ = pointops.knn_query(self.neighbours, coord, offset)
+        reference_index, _ = pointops.knn_query(self.neighbours, coord, offset) # [n, k]
         for block in self.blocks:
             points = block(points, reference_index)
         return points
@@ -234,6 +266,12 @@ class BlockSequence(nn.Module):
 class GridPool(nn.Module):
     """
     Partition-based Pooling (Grid Pooling)
+    格网池化，基于体素划分进行池化下采样，体素内坐标平均池化，特征最大池化，得到新的pxo，同时输出体素索引
+    Args:
+        in_channels: 输入维度
+        out_channels: 输出维度
+        grid_size: 体素大小
+        bias: fc层偏置
     """
 
     def __init__(self, in_channels, out_channels, grid_size, bias=False):
@@ -247,36 +285,48 @@ class GridPool(nn.Module):
         self.act = nn.ReLU(inplace=True)
 
     def forward(self, points, start=None):
-        coord, feat, offset = points
-        batch = offset2batch(offset)
-        feat = self.act(self.norm(self.fc(feat)))
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]], start: [b, 3]
+        output: points: [pxo], [[v,3],[v,c],[b]], cluster: [n]
+        """
+        coord, feat, offset = points # [n, 3] [n, c] [b]
+        batch = offset2batch(offset) # [b] -> [n]
+        feat = self.act(self.norm(self.fc(feat))) # [n, c]
         start = (
             segment_csr(
                 coord,
                 torch.cat([batch.new_zeros(1), torch.cumsum(batch.bincount(), dim=0)]),
                 reduce="min",
-            )
+            ) # [b, 3], 求每个batch的最小点
             if start is None
             else start
         )
         cluster = voxel_grid(
             pos=coord - start[batch], size=self.grid_size, batch=batch, start=0
-        )
+        ) # [n], 计算每个点在网格中的索引
         unique, cluster, counts = torch.unique(
             cluster, sorted=True, return_inverse=True, return_counts=True
         )
-        _, sorted_cluster_indices = torch.sort(cluster)
-        idx_ptr = torch.cat([counts.new_zeros(1), torch.cumsum(counts, dim=0)])
-        coord = segment_csr(coord[sorted_cluster_indices], idx_ptr, reduce="mean")
-        feat = segment_csr(feat[sorted_cluster_indices], idx_ptr, reduce="max")
-        batch = batch[idx_ptr[:-1]]
-        offset = batch2offset(batch)
+        _, sorted_cluster_indices = torch.sort(cluster) # 格网化索引
+        idx_ptr = torch.cat([counts.new_zeros(1), torch.cumsum(counts, dim=0)]) # [v+1], 体素分段
+        coord = segment_csr(coord[sorted_cluster_indices], idx_ptr, reduce="mean") # [v, 3], 坐标平均池化
+        feat = segment_csr(feat[sorted_cluster_indices], idx_ptr, reduce="max") # [v, c], 特征最大池化
+        batch = batch[idx_ptr[:-1]] # [v]
+        offset = batch2offset(batch) # [v] -> [b]
         return [coord, feat, offset], cluster
 
 
 class UnpoolWithSkip(nn.Module):
     """
     Map Unpooling with skip connection
+    带有跳跃连接的上采样
+    Args:
+        in_channels: 输入维度
+        out_channels: 输出维度
+        skip_channels: 跳跃连接维度
+        bias: fc层偏置
+        skip: 是否使用跳跃连接
+        backend: 上采样方式，'map' or 'interp'
     """
 
     def __init__(
@@ -308,20 +358,40 @@ class UnpoolWithSkip(nn.Module):
         )
 
     def forward(self, points, skip_points, cluster=None):
-        coord, feat, offset = points
-        skip_coord, skip_feat, skip_offset = skip_points
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]], skip_points: [pxo], [[ns,3],[ns,c],[b]], cluster: [ns]
+        output: points: [pxo], [[ns,3],[ns,c],[b]]
+        """
+        coord, feat, offset = points # [n, 3] [n, c] [b]
+        skip_coord, skip_feat, skip_offset = skip_points # [ns, 3] [ns, c] [b]
         if self.backend == "map" and cluster is not None:
-            feat = self.proj(feat)[cluster]
+            feat = self.proj(feat)[cluster] # [n, c] -> [ns, c], 投影上采样
         else:
             feat = pointops.interpolation(
                 coord, skip_coord, self.proj(feat), offset, skip_offset
-            )
-        if self.skip:
-            feat = feat + self.proj_skip(skip_feat)
-        return [skip_coord, feat, skip_offset]
+            ) # [n, c] -> [ns, c], 插值上采样
+        if self.skip: # 跳跃连接，特征融合
+            feat = feat + self.proj_skip(skip_feat) # [ns, c]
+        return [skip_coord, feat, skip_offset] # [ns, 3] [ns, c] [b]
 
 
 class Encoder(nn.Module):
+    """
+    Encoder for Point Transformer V2, 先进行格网池化, 再进行BlockSequence处理
+    Args:
+        depth: 编码器深度
+        in_channels: 输入维度
+        embed_channels: 输出维度
+        groups: 分组数量
+        grid_size: 体素大小
+        neighbours: 邻域大小
+        qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+        attn_drop_rate: drop比例
+        drop_path_rate: BottleNeck的drop比例
+        enable_checkpoint: checkpoint机制，以时间换空间
+    """
     def __init__(
         self,
         depth,
@@ -359,11 +429,32 @@ class Encoder(nn.Module):
         )
 
     def forward(self, points):
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]]
+        output: points: [pxo], [[ns,3],[ns,c],[b]], cluster: [n]
+        """
         points, cluster = self.down(points)
         return self.blocks(points), cluster
 
 
 class Decoder(nn.Module):
+    """
+    Decoder for Point Transformer V2, 先进行上采样, 再进行BlockSequence处理
+    Args:
+        in_channels: 输入维度
+        skip_channels: 跳跃连接维度
+        embed_channels: 输出维度
+        groups: 分组数量
+        depth: 解码器深度
+        neighbours: 邻域大小
+        qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+        attn_drop_rate: drop比例
+        drop_path_rate: BottleNeck的drop比例
+        enable_checkpoint: checkpoint机制，以时间换空间
+        unpool_backend: 上采样方式，'map' or 'interp'
+    """
     def __init__(
         self,
         in_channels,
@@ -403,11 +494,30 @@ class Decoder(nn.Module):
         )
 
     def forward(self, points, skip_points, cluster):
+        """
+        input: points: [pxo], [[ns,3],[ns,c],[b]], skip_points: [pxo], [[n,3],[n,c],[b]], cluster: [n]
+        output: points: [pxo], [[n,3],[n,c],[b]]
+        """
         points = self.up(points, skip_points, cluster)
         return self.blocks(points)
 
 
 class GVAPatchEmbed(nn.Module):
+    """
+    Patch Embedding for Point Transformer V2
+    Args:
+        depth: 编码器深度
+        in_channels: 输入维度
+        embed_channels: 输出维度
+        groups: 分组数量
+        neighbours: 邻域大小
+        qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+        attn_drop_rate: drop比例
+        drop_path_rate: BottleNeck的drop比例
+        enable_checkpoint: checkpoint机制，以时间换空间
+    """
     def __init__(
         self,
         depth,
@@ -444,6 +554,10 @@ class GVAPatchEmbed(nn.Module):
         )
 
     def forward(self, points):
+        """
+        input: points: [pxo], [[n,3],[n,c],[b]]
+        output: points: [pxo], [[n,3],[n,c],[b]]
+        """
         coord, feat, offset = points
         feat = self.proj(feat)
         return self.blocks([coord, feat, offset])
@@ -451,6 +565,32 @@ class GVAPatchEmbed(nn.Module):
 
 @MODELS.register_module("PT-v2m2")
 class PointTransformerV2(nn.Module):
+    """
+    Point Transformer V2
+    Args:
+        in_channels: 输入维度
+        num_classes: 输出维度
+        patch_embed_depth: Patch Embedding深度
+        patch_embed_channels: Patch Embedding输出维度
+        patch_embed_groups: Patch Embedding分组数量
+        patch_embed_neighbours: Patch Embedding邻域大小
+        enc_depths: 编码器深度
+        enc_channels: 编码器输出维度
+        enc_groups: 编码器分组数量
+        enc_neighbours: 编码器邻域大小
+        dec_depths: 解码器深度
+        dec_channels: 解码器输出维度
+        dec_groups: 解码器分组数量
+        dec_neighbours: 解码器邻域大小
+        grid_sizes: 体素大小
+        attn_qkv_bias: 无用
+        pe_multiplier: 位置编码乘性因子
+        pe_bias: 位置编码偏置因子
+        attn_drop_rate: drop比例
+        drop_path_rate: BottleNeck的drop比例
+        enable_checkpoint: checkpoint机制，以时间换空间
+        unpool_backend: 上采样方式，'map' or 'interp'
+    """
     def __init__(
         self,
         in_channels,
@@ -488,6 +628,7 @@ class PointTransformerV2(nn.Module):
         assert self.num_stages == len(enc_neighbours)
         assert self.num_stages == len(dec_neighbours)
         assert self.num_stages == len(grid_sizes)
+        # 点云嵌入层
         self.patch_embed = GVAPatchEmbed(
             in_channels=in_channels,
             embed_channels=patch_embed_channels,
@@ -500,15 +641,17 @@ class PointTransformerV2(nn.Module):
             attn_drop_rate=attn_drop_rate,
             enable_checkpoint=enable_checkpoint,
         )
-
+        # bottleneck的drop率逐渐提高
         enc_dp_rates = [
             x.item() for x in torch.linspace(0, drop_path_rate, sum(enc_depths))
         ]
         dec_dp_rates = [
             x.item() for x in torch.linspace(0, drop_path_rate, sum(dec_depths))
         ]
-        enc_channels = [patch_embed_channels] + list(enc_channels)
-        dec_channels = list(dec_channels) + [enc_channels[-1]]
+        # 前一层的输出维度作为下一层的输入维度
+        enc_channels = [patch_embed_channels] + list(enc_channels) # [48, 96, 192, 384, 512]
+        dec_channels = list(dec_channels) + [enc_channels[-1]] # [48, 96, 192, 384, 512]
+        # 编码器与解码器
         self.enc_stages = nn.ModuleList()
         self.dec_stages = nn.ModuleList()
         for i in range(self.num_stages):
@@ -547,6 +690,7 @@ class PointTransformerV2(nn.Module):
             )
             self.enc_stages.append(enc)
             self.dec_stages.append(dec)
+        # 分割头
         self.seg_head = (
             nn.Sequential(
                 nn.Linear(dec_channels[0], dec_channels[0]),
@@ -559,6 +703,10 @@ class PointTransformerV2(nn.Module):
         )
 
     def forward(self, data_dict):
+        """
+        input: data_dict: {"coord": [n, 3], "feat": [n, c], "offset": [b]}
+        output: seg_logits: [n, num_classes]
+        """
         coord = data_dict["coord"]
         feat = data_dict["feat"]
         offset = data_dict["offset"].int()
@@ -566,16 +714,17 @@ class PointTransformerV2(nn.Module):
         # a batch of point cloud is a list of coord, feat and offset
         points = [coord, feat, offset]
         points = self.patch_embed(points)
-        skips = [[points]]
+        skips = [[points]] # 便于添加cluster
         for i in range(self.num_stages):
             points, cluster = self.enc_stages[i](points)
-            skips[-1].append(cluster)  # record grid cluster of pooling
-            skips.append([points])  # record points info of current stage
-
+            skips[-1].append(cluster)  # record grid cluster of pooling, 记录池化时的格网索引
+            skips.append([points])  # record points info of current stage, 记录池化后的当前点云信息
+        # 此时skips共五层，最后一层不带有cluster信息
+        # 取出最后一层的点云信息
         points = skips.pop(-1)[0]  # unpooling points info in the last enc stage
         for i in reversed(range(self.num_stages)):
             skip_points, cluster = skips.pop(-1)
-            points = self.dec_stages[i](points, skip_points, cluster)
+            points = self.dec_stages[i](points, skip_points, cluster) # 上采样
         coord, feat, offset = points
-        seg_logits = self.seg_head(feat)
+        seg_logits = self.seg_head(feat) # [n, num_classes]
         return seg_logits
