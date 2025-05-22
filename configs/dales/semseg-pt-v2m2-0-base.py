@@ -1,8 +1,8 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-resume = True
-evaluate=False
+resume = False
+evaluate = True
 batch_size = 2  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
@@ -97,7 +97,7 @@ data = dict(
     names=names,
     train=dict(
         type=dataset_type,
-        split="train",
+        split="test",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=False),
@@ -134,7 +134,7 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        split="train",
+        split="test",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=False),
@@ -171,7 +171,7 @@ data = dict(
     ),
     test=dict(
         type=dataset_type,
-        split="train",
+        split="test",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=False),
