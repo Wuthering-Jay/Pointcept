@@ -155,7 +155,7 @@ class SemSegEvaluator(HookBase):
             self.trainer.storage.put_scalar("val_union", union)
             self.trainer.storage.put_scalar("val_target", target)
             self.trainer.storage.put_scalar("val_loss", loss.item())
-            accuracy = np.sum(intersection) / (np.sume(target + 1e-10))
+            accuracy = np.sum(intersection) / (np.sum(target + 1e-10))
             
             info = "Test: [{iter}/{max_iter}] ".format(
                 iter=i + 1, max_iter=len(self.trainer.val_loader)
@@ -191,15 +191,20 @@ class SemSegEvaluator(HookBase):
                 m_iou, m_pre, m_rec, m_f1, all_acc
             )
         )
+        # 计算最长的类别名称长度 & 最大的索引宽度
+        max_name_length = max(len(name) for name in self.trainer.cfg.data.names)
+        max_idx_width = len(str(self.trainer.cfg.data.num_classes - 1))
         for i in range(self.trainer.cfg.data.num_classes):
             self.trainer.logger.info(
-                "Class_{idx}-{name} Result: iou/accuracy {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
+                "Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
                     idx=i,
                     name=self.trainer.cfg.data.names[i],
                     iou=iou_class[i],
                     pre=pre_class[i],
                     rec=rec_class[i],
                     f1=f1_class[i],
+                    idx_width=max_idx_width,
+                    name_width=max_name_length
                 )
             )
         current_epoch = self.trainer.epoch + 1

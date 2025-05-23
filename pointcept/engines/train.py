@@ -221,6 +221,9 @@ class Trainer(TrainerBase):
             self.scheduler.step()
         if self.cfg.empty_cache:
             torch.cuda.empty_cache()
+        if self.cfg.empty_cache_freq > 0:
+            if self.comm_info["iter"] % self.cfg.empty_cache_freq == 0:
+                torch.cuda.empty_cache()
         self.comm_info["model_output_dict"] = output_dict
 
     def after_epoch(self):

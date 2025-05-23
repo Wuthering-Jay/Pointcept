@@ -325,24 +325,42 @@ class SemSegTester(TesterBase):
                     os.path.join(save_path, f"{self.test_loader.dataset.split}.pth"),
                 )
 
+            # iou_class = intersection / (union + 1e-10)
+            # accuracy_class = intersection / (target + 1e-10)
+            # mIoU = np.mean(iou_class)
+            # mAcc = np.mean(accuracy_class)
+            # allAcc = sum(intersection) / (sum(target) + 1e-10)
+            
             iou_class = intersection / (union + 1e-10)
-            accuracy_class = intersection / (target + 1e-10)
-            mIoU = np.mean(iou_class)
-            mAcc = np.mean(accuracy_class)
-            allAcc = sum(intersection) / (sum(target) + 1e-10)
+            # accuracy_class = intersection / (target + 1e-10)
+            rec_class = intersection / (target + 1e-10)
+            pre_class = intersection / (union+intersection-target + 1e-10)
+            f1_class = 2 * (pre_class * rec_class) / (pre_class + rec_class + 1e-10)
+            m_iou = np.mean(iou_class)
+            # m_acc = np.mean(acc_class)
+            m_rec = np.mean(rec_class)
+            m_pre = np.mean(pre_class)
+            m_f1 = np.mean(f1_class)
+            all_acc = sum(intersection) / (sum(target) + 1e-10)
 
             logger.info(
-                "Val result: mIoU/mAcc/allAcc {:.4f}/{:.4f}/{:.4f}".format(
-                    mIoU, mAcc, allAcc
+                "Val result: mIoU/mPre/mRec/mF1/OA {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}.".format(
+                    m_iou, m_pre, m_rec, m_f1, all_acc
                 )
             )
+            max_name_length = max(len(name) for name in self.cfg.data.names)
+            max_idx_width = len(str(self.cfg.data.num_classes - 1))
             for i in range(self.cfg.data.num_classes):
                 logger.info(
-                    "Class_{idx} - {name} Result: iou/accuracy {iou:.4f}/{accuracy:.4f}".format(
+                    "Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
                         idx=i,
                         name=self.cfg.data.names[i],
                         iou=iou_class[i],
-                        accuracy=accuracy_class[i],
+                        pre=pre_class[i],
+                        rec=rec_class[i],
+                        f1=f1_class[i],
+                        idx_width=max_idx_width,
+                        name_width=max_name_length
                     )
                 )
             logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
