@@ -13,6 +13,8 @@ from utils.tile import process_las_files
 from utils.misc import *
 
 #################### 训练基础参数 #######################
+batch_size = 2                                        # bs: total bs in all gpus
+epoch = 1                                           # 训练轮数
 resume = False                                          # 是否从上次训练中断处继续训练
 weight_path = None                                      # 预训练模型路径，None表示不加载预训练模型
 las_dir = r"E:\data\天津样例数据\x"                  # 点云数据文件夹，训练用的las点云位于该文件夹下的train目录中
@@ -59,12 +61,18 @@ def main():
     options = None
 
     cfg = default_config_parser(config_file, options)
+    cfg.batch_size = batch_size
+    cfg.epoch = epoch
+    cfg.eval_epoch = epoch
     cfg.resume = resume
     cfg.weight = weight_path
     cfg.save_path = save_path
     cfg.model.criteria[0].weight = weights
     cfg.data_root = os.path.join(las_dir, "npy")
-    cfg.names=extract_label_id(label_mapping_file)
+    cfg.data.train.data_root = os.path.join(las_dir, "npy")
+    cfg.data.val.data_root = os.path.join(las_dir, "npy")
+    cfg.data.test.data_root = os.path.join(las_dir, "npy")
+    cfg.data.names=extract_label_id(label_mapping_file)
     cfg.model.backbone.num_classes = num_classes
     cfg.data.num_classes = num_classes
     cfg.model.backbone.grid_sizes = (

@@ -15,11 +15,11 @@ from utils.misc import *
 
 #################### 预测基础参数 #######################
 las_dir = r"E:\data\天津样例数据\x"                  # 点云数据文件夹，训练用的las点云位于该文件夹下的train目录中
-output_dir = r"E:\data\天津样例数据\细粒度\pred"          # 预测结果保存路径
+output_dir = r"E:\data\天津样例数据\x\pred"          # 预测结果保存路径
 weight_path =  "exp/tj_f/semseg-pt-v2m2-0-base/model/model_best.pth"  # 预训练模型路径
 config_file = "configs/tj_f/semseg-pt-v2m2-0-base.py"   # 配置文件路径
 save_path = "exp/tj_f/semseg-pt-v2m2-0-base"            # 日志保存路径
-num_classes = 6                                         # 训练的类别数
+num_classes = 11                                         # 训练的类别数
 point_distance = 0.25                                   # 点云采样间隔，单位米，略大于点云平均距离
 ########################################################
 
@@ -32,18 +32,18 @@ label_mapping_file = os.path.join(train_npy_dir, "label_mapping.json")
 label_statistics_file = os.path.join(train_npy_dir, "label_statistics.json")
 
 # 若 las_dir/train 目录下的las文件已被处理过，则不需要再次处理，可将下面的代码注释掉
-process_las_files(
-    input_path=test_data_dir,
-    output_dir=test_npy_dir,
-    ignore_labels=[],
-    window_size=(100,100),
-    min_points=4096,
-    max_points=65536,
-    label_count=False,
-    label_remap=False,
-    output_format="npy",
-    test_mode=True
-)
+# process_las_files(
+#     input_path=test_data_dir,
+#     output_dir=test_npy_dir,
+#     ignore_labels=[],
+#     window_size=(100,100),
+#     min_points=4096,
+#     max_points=65536,
+#     label_count=False,
+#     label_remap=False,
+#     output_format="npy",
+#     test_mode=True
+# )
 
 weights=extract_sorted_weights(label_statistics_file)
 
@@ -65,7 +65,10 @@ def main():
     cfg.weight = weight_path
     cfg.model.criteria[0].weight = weights
     cfg.data_root = os.path.join(las_dir, "npy")
-    cfg.names=extract_label_id(label_mapping_file)
+    cfg.data.train.data_root = os.path.join(las_dir, "npy")
+    cfg.data.val.data_root = os.path.join(las_dir, "npy")
+    cfg.data.test.data_root = os.path.join(las_dir, "npy")
+    cfg.data.names=extract_label_id(label_mapping_file)
     cfg.model.backbone.num_classes = num_classes
     cfg.data.num_classes = num_classes
     cfg.model.backbone.grid_sizes = (
