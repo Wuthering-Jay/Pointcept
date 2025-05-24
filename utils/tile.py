@@ -21,7 +21,8 @@ class LASProcessor:
                  output_format: Literal["las", "npy"] = "las",
                  save_color: bool = False,
                  save_intensity: bool = False,
-                 save_normal: bool = False):
+                 save_normal: bool = False,
+                 test_mode: bool = False):
         """
         Initialize LAS point cloud processor.
         
@@ -51,6 +52,7 @@ class LASProcessor:
         self.save_color = save_color
         self.save_intensity = save_intensity
         self.save_normal = save_normal
+        self.test_mode = test_mode
         
         # For label remapping and counting
         self.label_map = {}  # Will store original_label -> remapped_label
@@ -451,27 +453,29 @@ class LASProcessor:
             # Copy points from this segment
             for dimension in las_data.point_format.dimension_names:
                 # Apply label remapping to classification dimension if enabled
-                if dimension == 'classification' and self.label_remap:
-                    original_labels = getattr(las_data, dimension)[segment_indices]
-                    
-                    # Vectorized remapping
-                    # Create a mapping array that we can index directly
-                    max_label_val = np.max(original_labels) + 1
-                    remap_array = np.ones(max_label_val, dtype=np.int32) * -1
-                    
-                    # Fill in the mapping values
-                    for orig_label, new_label in self.label_map.items():
-                        if orig_label < max_label_val:
-                            remap_array[orig_label] = new_label
-                    
-                    # For ignored labels, keep them as is
-                    for label in self.ignore_labels:
-                        if label < max_label_val:
-                            remap_array[label] = label
-                    
-                    # Apply remapping
-                    remapped_labels = remap_array[original_labels]
-                    setattr(new_las, dimension, remapped_labels)
+                if dimension == 'classification':
+                    if self.test_mode:
+                        # In test mode, use zeros for classification
+                        setattr(new_las, dimension, np.zeros(len(segment_indices), dtype=np.int32))
+                    else:
+                        # Original classification handling logic
+                        original_labels = getattr(las_data, dimension)[segment_indices]
+                        if self.label_remap:
+                            max_label_val = np.max(original_labels) + 1
+                            remap_array = np.ones(max_label_val, dtype=np.int32) * -1
+                            
+                            for orig_label, new_label in self.label_map.items():
+                                if orig_label < max_label_val:
+                                    remap_array[orig_label] = new_label
+                            
+                            for label in self.ignore_labels:
+                                if label < max_label_val:
+                                    remap_array[label] = label
+                            
+                            remapped_labels = remap_array[original_labels]
+                            setattr(new_las, dimension, remapped_labels)
+                        else:
+                            setattr(new_las, dimension, original_labels)
                 else:
                     setattr(new_las, dimension, getattr(las_data, dimension)[segment_indices])
             
@@ -518,27 +522,31 @@ class LASProcessor:
             np.save(segment_folder / "index.npy", segment_indices)
             
             # Handle labels (classification) - required, default to zeros if not present
-            if hasattr(las_data, 'classification'):
-                labels = las_data.classification[segment_indices]
-                
-                # Apply remapping if enabled
-                if self.label_remap:
-                    # Vectorized remapping
-                    max_label_val = np.max(labels) + 1
-                    remap_array = np.zeros(max_label_val, dtype=np.int32)
-                    
-                    # Fill in the mapping values
-                    for orig_label, new_label in self.label_map.items():
-                        if orig_label < max_label_val:
-                            remap_array[orig_label] = new_label
-                    
-                    # Apply remapping
-                    segment_labels = remap_array[labels]
-                else:
-                    segment_labels = labels
-            else:
-                # No classification in input, use zeros
+            if self.test_mode:
+                # In test mode, use zeros for all segments
                 segment_labels = np.zeros(len(segment_indices), dtype=np.int32)
+            else:
+                if hasattr(las_data, 'classification'):
+                    labels = las_data.classification[segment_indices]
+                    
+                    # Apply remapping if enabled
+                    if self.label_remap:
+                        # Vectorized remapping
+                        max_label_val = np.max(labels) + 1
+                        remap_array = np.zeros(max_label_val, dtype=np.int32)
+                        
+                        # Fill in the mapping values
+                        for orig_label, new_label in self.label_map.items():
+                            if orig_label < max_label_val:
+                                remap_array[orig_label] = new_label
+                        
+                        # Apply remapping
+                        segment_labels = remap_array[labels]
+                    else:
+                        segment_labels = labels
+                else:
+                    # No classification in input, use zeros
+                    segment_labels = np.zeros(len(segment_indices), dtype=np.int32)
             
             np.save(segment_folder / "segment.npy", segment_labels)
             
@@ -584,7 +592,8 @@ class LASProcessor:
 def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0), 
                       min_points=None, max_points=None, 
                       ignore_labels=None, label_remap=False, label_count=False,
-                      output_format="las", save_color=False, save_intensity=False, save_normal=False):
+                      output_format="las", save_color=False, save_intensity=False, save_normal=False,
+                      test_mode=False):
     """
     Process LAS files with rectangular windowing and adaptive segmentation.
     
@@ -614,7 +623,8 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
         output_format=output_format,
         save_color=save_color,
         save_intensity=save_intensity,
-        save_normal=save_normal
+        save_normal=save_normal,
+        test_mode=test_mode
     )
     
     processor.process_all_files()
@@ -622,18 +632,19 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\jzg\train"
-    output_dir=r"E:\data\jzg\npy\train"
-    window_size=(50., 50.)
+    input_path=r"E:\data\天津样例数据\细粒度\train"
+    output_dir=r"E:\data\天津样例数据\细粒度\npy\train"
+    window_size=(100., 100.)
     min_points=4096
     max_points=32768
-    ignore_labels=[]
+    ignore_labels=[7,13,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36]
     label_remap=True
     label_count=True
     output_format="npy"
     save_color=False
     save_intensity=False
     save_normal=False
+    test_mode=False
     
     process_las_files(
         input_path=input_path,
@@ -647,5 +658,6 @@ if __name__ == "__main__":
         output_format=output_format,
         save_color=save_color,
         save_intensity=save_intensity,
-        save_normal=save_normal
+        save_normal=save_normal,
+        test_mode=test_mode
     )

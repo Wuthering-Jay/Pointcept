@@ -23,7 +23,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-    config_file = "configs/opengf/semseg-pt-v2m2-0-base.py"
+    config_file = "configs/tj_f/semseg-pt-v2m2-0-base.py"
     options = None
 
     cfg = default_config_parser(config_file, options)
