@@ -622,11 +622,12 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\jzg\train"
-    output_dir=r"E:\data\jzg\npy\train"
-    window_size=(50., 50.)
+    input_path=r"D:\data\天津样例数据\细粒度\test"
+    output_dir=r"D:\data\天津样例数据\细粒度\npy\test"
+    window_size=(100., 100.)
     min_points=4096
-    max_points=32768
+    max_points=65536
+    # ignore_labels=[1,7,12,13,15,20,21,22,27,28,29]
     ignore_labels=[]
     label_remap=True
     label_count=True
