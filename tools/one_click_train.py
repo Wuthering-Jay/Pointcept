@@ -14,14 +14,14 @@ from utils.misc import *
 
 #################### 训练基础参数 #######################
 batch_size = 2                                        # bs: total bs in all gpus
-epoch = 1                                           # 训练轮数
+epoch = 10                                           # 训练轮数
 resume = False                                          # 是否从上次训练中断处继续训练
 weight_path = None                                      # 预训练模型路径，None表示不加载预训练模型
-las_dir = r"E:\data\天津样例数据\x"                  # 点云数据文件夹，训练用的las点云位于该文件夹下的train目录中
+las_dir = r"D:\data\天津样例数据\细粒度"                  # 点云数据文件夹，训练用的las点云位于该文件夹下的train目录中
 config_file = "configs/tj_f/semseg-pt-v2m2-0-base.py"   # 配置文件路径
 save_path = "exp/tj_f/semseg-pt-v2m2-0-base"            # 训练日志与模型保存路径
 ignore_labels=[] # 忽略的类别标签
-num_classes = 11                                        # 训练的类别数
+num_classes = 8                                        # 训练的类别数
 point_distance = 0.25                                   # 点云采样间隔，单位米，略大于点云平均距离
 ########################################################
 

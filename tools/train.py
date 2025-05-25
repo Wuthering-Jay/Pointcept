@@ -23,11 +23,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-<<<<<<< HEAD
-    config_file = "configs/tj_c/semseg-pt-v2m2-0-base.py"
-=======
     config_file = "configs/tj_f/semseg-pt-v2m2-0-base.py"
->>>>>>> 7c0da85e8e8e594a4d9ba1be5204dec370cd85b2
     options = None
 
     cfg = default_config_parser(config_file, options)
