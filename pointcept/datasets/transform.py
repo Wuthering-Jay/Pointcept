@@ -16,6 +16,8 @@ import torch
 import copy
 from collections.abc import Sequence, Mapping
 
+from tensorboard.compat.tensorflow_stub.dtypes import uint64
+
 from pointcept.utils.registry import Registry
 
 TRANSFORMS = Registry("transforms")
@@ -820,6 +822,72 @@ class ElasticDistortion(object):
 
 
 @TRANSFORMS.register_module()
+class FakeGridSample(object):
+    def __init__(
+        self,
+        grid_size=0.05,
+        hash_type="fnv",
+        mode="train",
+        return_inverse=False,
+        return_grid_coord=False,
+        return_min_coord=False,
+        return_displacement=False,
+        project_displacement=False,
+    ):
+        self.grid_size = grid_size
+        self.hash_type = hash_type
+        assert mode in ["train", "test"]
+        self.mode = mode
+        self.return_inverse = return_inverse
+        self.return_grid_coord = return_grid_coord
+        self.return_min_coord = return_min_coord
+        self.return_displacement = return_displacement
+        self.project_displacement = project_displacement
+
+    def __call__(self, data_dict):
+        assert "coord" in data_dict
+        coord = data_dict["coord"]
+        N = coord.shape[0]
+
+        # 计算 grid_coord，和GridSample一致
+        scaled_coord = coord / np.array(self.grid_size)
+        grid_coord = np.round(scaled_coord).astype(int)
+
+        min_coord = grid_coord.min(0)
+        grid_coord_out = grid_coord - min_coord
+        min_coord_out = min_coord * np.array(self.grid_size)
+        scaled_coord_out = scaled_coord - min_coord
+
+        output = data_dict.copy()
+
+        if self.return_inverse:
+            output["inverse"] = np.arange(N)
+
+        if self.return_grid_coord:
+            output["grid_coord"] = grid_coord_out
+            output.setdefault("index_valid_keys", []).append("grid_coord")
+
+        if self.return_min_coord:
+            output["min_coord"] = min_coord_out.reshape([1, 3])
+
+        if self.return_displacement:
+            displacement = scaled_coord_out - grid_coord_out - 0.5
+            if self.project_displacement and "normal" in data_dict:
+                displacement = np.sum(displacement * data_dict["normal"], axis=-1, keepdims=True)
+            output["displacement"] = displacement
+            output.setdefault("index_valid_keys", []).append("displacement")
+
+        if self.mode == "train":
+            return output
+        elif self.mode == "test":
+            # 按GridSample test模式，输出为list，且需包含 index 字段
+            output["index"] = np.arange(N)
+            return [output]
+        else:
+            raise NotImplementedError
+
+
+@TRANSFORMS.register_module()
 # 体素网格采样
 class GridSample(object):
     def __init__(
@@ -846,6 +914,7 @@ class GridSample(object):
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
         # 计算规则化坐标
+        self.grid_size=self.grid_size
         scaled_coord = data_dict["coord"] / np.array(self.grid_size)
         grid_coord = np.floor(scaled_coord).astype(int)
         # 计算最小网格坐标，归一化

@@ -82,7 +82,7 @@ class LASProcessor:
             self._collect_labels()
             
         # Second pass: process and segment files
-        for las_file in tqdm(self.las_files, desc="Processing files", unit="file"):
+        for las_file in tqdm(self.las_files, desc="Processing files", unit="file",position=0):
             print(f"Processing {las_file}...")
             self.process_file(las_file)
             
@@ -98,8 +98,8 @@ class LASProcessor:
         """Collect all unique labels from all files for remapping and counting."""
         print("Collecting labels from all files...")
         unique_labels = set()
-        
-        for las_file in tqdm(self.las_files, desc="Scanning files", unit="file"):
+
+        for las_file in tqdm(self.las_files, desc="Scanning files", unit="file",position=0):
             with laspy.open(las_file) as fh:
                 las_data = fh.read()
                 
@@ -244,7 +244,7 @@ class LASProcessor:
         segments = []
         total_windows = num_windows_x * num_windows_y
         
-        with tqdm(total=total_windows, desc="Creating segments", unit="segment") as pbar:
+        with tqdm(total=total_windows, desc="Creating segments", unit="segment",position=0) as pbar:
             for i in range(num_windows_x):
                 for j in range(num_windows_y):
                     x_min = min_x + i * x_size
@@ -292,7 +292,7 @@ class LASProcessor:
         # Handle segments above max_points threshold
         print(f"Subdividing segments with more than {self.max_points} points...")
         i = 0
-        with tqdm(total=len(segments), desc="Checking max points", unit="segment") as pbar:
+        with tqdm(total=len(segments), desc="Checking max points", unit="segment",position=0) as pbar:
             while i < len(segments):
                 if len(segments[i]) > self.max_points:
                     # Further divide this segment
@@ -324,7 +324,7 @@ class LASProcessor:
         # Handle segments below min_points threshold
         print(f"Merging segments with fewer than {self.min_points} points...")
         i = 0
-        with tqdm(total=len(segments), desc="Checking min points", unit="segment") as pbar:
+        with tqdm(total=len(segments), desc="Checking min points", unit="segment",position=0) as pbar:
             while i < len(segments):
                 if len(segments[i]) < self.min_points:
                     # Find nearest segment to merge with
@@ -436,7 +436,7 @@ class LASProcessor:
         base_name = las_file.stem
         
         print(f"Saving {len(segments)} segments as LAS files...")
-        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving LAS segments", unit="file"):
+        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving LAS segments", unit="file",position=0):
             # Create a copy of the header
             header = laspy.LasHeader(point_format=las_data.header.point_format, 
                                      version=las_data.header.version)
@@ -504,7 +504,7 @@ class LASProcessor:
         base_name = las_file.stem
         
         print(f"Saving {len(segments)} segments as NPY files...")
-        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving NPY segments", unit="folder"):
+        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving NPY segments", unit="folder",position=0):
             # Create segment folder
             segment_folder = self.output_dir / f"{base_name}_segment_{i:03d}"
             segment_folder.mkdir(exist_ok=True)
@@ -637,7 +637,7 @@ if __name__ == "__main__":
     window_size=(100., 100.)
     min_points=4096
     max_points=65536
-    # ignore_labels=[1,7,12,13,15,20,21,22,27,28,29]
+    # ignore_labels=[1,3,4,7,9,12,13,15,20,21,22,27,28,29]
     ignore_labels=[]
     label_remap=True
     label_count=True

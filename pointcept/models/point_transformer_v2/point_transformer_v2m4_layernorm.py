@@ -50,64 +50,92 @@ class GroupedVectorAttention(nn.Module):
         pe_multiplier: 位置编码乘性因子
         pe_bias: 位置编码偏置因子
     """
-    def __init__(self, embed_channels, groups, attn_drop_rate=0.0, qkv_bias=True, pe_multiplier=False, pe_bias=True):
-        super().__init__()
+    def __init__(
+        self,
+        embed_channels,
+        groups,
+        attn_drop_rate=0.0,
+        qkv_bias=True,
+        pe_multiplier=False,
+        pe_bias=True,
+    ):
+        super(GroupedVectorAttention, self).__init__()
         self.embed_channels = embed_channels
         self.groups = groups
+        assert embed_channels % groups == 0
         self.attn_drop_rate = attn_drop_rate
-        
-        # 融合QK投影
-        self.qk = nn.Linear(embed_channels, 2*embed_channels)
-        self.q_norm = PointLayerNorm(embed_channels)
-        self.k_norm = PointLayerNorm(embed_channels)
-        self.linear_v = nn.Linear(embed_channels, embed_channels)
-        
-        # 简化位置编码
-        if pe_multiplier:
-            self.linear_p_multiplier = nn.Linear(3, embed_channels)
-        if pe_bias:
-            self.linear_p_bias = nn.Linear(3, embed_channels)
-        
-        # 使用更轻量级的权重编码
-        self.weight_encoding = nn.Linear(embed_channels, groups)
-        
+        self.qkv_bias = qkv_bias
+        self.pe_multiplier = pe_multiplier
+        self.pe_bias = pe_bias
+
+        self.linear_q = nn.Sequential(
+            nn.Linear(embed_channels, embed_channels, bias=qkv_bias),
+            PointLayerNorm(embed_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.linear_k = nn.Sequential(
+            nn.Linear(embed_channels, embed_channels, bias=qkv_bias),
+            PointLayerNorm(embed_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.linear_v = nn.Linear(embed_channels, embed_channels, bias=qkv_bias)
+
+        if self.pe_multiplier:
+            self.linear_p_multiplier = nn.Sequential(
+                nn.Linear(3, embed_channels),
+                PointLayerNorm(embed_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(embed_channels, embed_channels),
+            )
+        if self.pe_bias:
+            self.linear_p_bias = nn.Sequential(
+                nn.Linear(3, embed_channels),
+                PointLayerNorm(embed_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(embed_channels, embed_channels),
+            )
+        self.weight_encoding = nn.Sequential(
+            nn.Linear(embed_channels, groups),
+            PointLayerNorm(groups),
+            nn.ReLU(inplace=True),
+            nn.Linear(groups, groups),
+        )
+        self.softmax = nn.Softmax(dim=1)
         self.attn_drop = nn.Dropout(attn_drop_rate)
 
+
     def forward(self, feat, coord, reference_index):
-        # 融合QK计算
-        qk = self.qk(feat)
-        query, key = qk.chunk(2, dim=-1)
-        query = self.q_norm(query).relu_()
-        key = self.k_norm(key).relu_()
-        value = self.linear_v(feat)
-        
-        # Grouping操作
-        key = pointops.grouping(reference_index, key, coord, with_xyz=True)
-        value = pointops.grouping(reference_index, value, coord, with_xyz=False)
-        pos, key = key[:, :, :3], key[:, :, 3:]
-        
-        # 位置编码
-        relation_qk = key - query.unsqueeze(1)
-        if hasattr(self, 'linear_p_multiplier'):
-            relation_qk *= self.linear_p_multiplier(pos)
-        if hasattr(self, 'linear_p_bias'):
-            peb = self.linear_p_bias(pos)
-            relation_qk += peb
-            value += peb
-        
-        # Flash Attention准备
-        query = einops.rearrange(query, "n (g h) -> n g 1 h", g=self.groups)
-        key = einops.rearrange(relation_qk, "n k (g h) -> n g k h", g=self.groups)
-        value = einops.rearrange(value, "n k (g h) -> n g k h", g=self.groups)
-        
-        # 使用Flash Attention计算
-        output = flash_attn.flash_attn_func(
-            query.half(), key.half(), value.half(), 
-            dropout_p=self.attn_drop_rate if self.training else 0,
-            softmax_scale=1.0
+        """
+        input: feat: [n, c], coord: [n, 3], reference_index: [n, k]
+        output: feat: [n, c]
+        """
+        query, key, value = (
+            self.linear_q(feat), # [n, c]
+            self.linear_k(feat), # [n, c]
+            self.linear_v(feat), # [n, c]
         )
-        output = einops.rearrange(output, "n g h -> n (g h)")
-        return output
+        key = pointops.grouping(reference_index, key, coord, with_xyz=True) # [n, k, 3+c]
+        value = pointops.grouping(reference_index, value, coord, with_xyz=False) # [n, k, c]
+        pos, key = key[:, :, 0:3], key[:, :, 3:] # [n, k, 3], [n, k, c]
+        relation_qk = key - query.unsqueeze(1) # [n, k ,c], 邻域内与中心点的相对位置, 用于相对位置编码
+        if self.pe_multiplier: # 乘性因子
+            pem = self.linear_p_multiplier(pos) # [n, k, c]
+            relation_qk = relation_qk * pem # [n, k, c]
+        if self.pe_bias: # 偏置因子
+            peb = self.linear_p_bias(pos) # [n, k, c]
+            relation_qk = relation_qk + peb # [n, k, c]
+            value = value + peb # [n, k, c]
+
+        weight = self.weight_encoding(relation_qk) # [n, k, g]
+        weight = self.attn_drop(self.softmax(weight)) # [n, k, g]
+
+        mask = torch.sign(reference_index + 1) # [n, k], 无效邻域点标记为0
+        weight = torch.einsum("n s g, n s -> n s g", weight, mask) # [n, k, g]
+        value = einops.rearrange(value, "n ns (g i) -> n ns g i", g=self.groups) # [n, k, g, i]
+        feat = torch.einsum("n s g i, n s g -> n g i", value, weight) # [n, g, i]
+        feat = einops.rearrange(feat, "n g i -> n (g i)") # [n, c]
+        return feat # [n, c]
 
 
 class Block(nn.Module):
