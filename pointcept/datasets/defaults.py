@@ -28,6 +28,7 @@ class DefaultDataset(Dataset):
     # 数据集的有效属性列表
     VALID_ASSETS = [
         "coord", # 坐标
+        "echo_ratio", # 回波穿透比
         "color", # 颜色
         "normal", # 法线
         "strength", # 强度
@@ -125,6 +126,9 @@ class DefaultDataset(Dataset):
         # coord、color、normal 为 float32
         if "coord" in data_dict.keys():
             data_dict["coord"] = data_dict["coord"].astype(np.float32)
+            
+        if "echo_ratio" in data_dict.keys():
+            data_dict["echo_ratio"] = data_dict["echo_ratio"].astype(np.float32)
 
         if "color" in data_dict.keys():
             data_dict["color"] = data_dict["color"].astype(np.float32)

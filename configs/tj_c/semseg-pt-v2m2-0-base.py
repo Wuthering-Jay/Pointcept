@@ -10,7 +10,7 @@ empty_cache_freq = 100
 empty_cache_per_epoch = True
 enable_amp = True
 save_path = "exp/tj_c/semseg-pt-v2m2-0-base"
-weight = "exp/tj_c/semseg-pt-v2m2-0-base/model/model_last.pth"
+weight = "exp/tj_c/semseg-pt-v2m2-0-base/model/model_best.pth"
 num_classes = 2
 
 # model settings
@@ -18,7 +18,7 @@ model = dict(
     type="DefaultSegmentor",
     backbone=dict(
         type="PT-v2m2",
-        in_channels=3,
+        in_channels=4,
         num_classes=num_classes,
         patch_embed_depth=1,
         patch_embed_channels=48,
@@ -49,7 +49,7 @@ model = dict(
     # fmt: off
     criteria=[
         dict(type="CrossEntropyLoss",
-             weight=[0.05,0.95],
+             weight=[0.15,0.85],
              loss_weight=1.0,
              ignore_index=-1),
         # dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
@@ -71,7 +71,7 @@ scheduler = dict(
 # dataset settings
 dataset_type = "PointCloudDataset"
 # data_root = "data/semantic_kitti"
-data_root = r"D:\data\天津样例数据\粗粒度\npy"
+data_root = r"D:\data\天津样例数据\粗粒度4\npy"
 
 ignore_index = -1
 names = [
@@ -114,8 +114,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment"),
-                feat_keys=("coord",),
+                keys=("coord", "segment","echo_ratio"),
+                feat_keys=("coord","echo_ratio"),
             ),
         ],
         test_mode=False,
@@ -151,8 +151,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "grid_coord", "segment"),
-                feat_keys=("coord",),
+                keys=("coord", "segment","echo_ratio"),
+                feat_keys=("coord","echo_ratio"),
             ),
         ],
         test_mode=False,
@@ -168,7 +168,7 @@ data = dict(
         test_mode=True,
         test_cfg=dict(
             voxelize=dict(
-                type="GridSample",
+                type="FakeGridSample",
                 grid_size=0.2,
                 hash_type="fnv",
                 mode="test",
@@ -180,8 +180,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "grid_coord", "index"),
-                    feat_keys=("coord",),
+                keys=("coord", "echo_ratio","index"),
+                feat_keys=("coord","echo_ratio"),
                 ),
             ],
             aug_transform=[

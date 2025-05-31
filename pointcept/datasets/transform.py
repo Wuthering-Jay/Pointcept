@@ -16,8 +16,6 @@ import torch
 import copy
 from collections.abc import Sequence, Mapping
 
-from tensorboard.compat.tensorflow_stub.dtypes import uint64
-
 from pointcept.utils.registry import Registry
 
 TRANSFORMS = Registry("transforms")
@@ -30,6 +28,7 @@ def index_operator(data_dict, index, duplicate=False):
     if "index_valid_keys" not in data_dict:
         data_dict["index_valid_keys"] = [
             "coord",
+            "echo_ratio",
             "color",
             "normal",
             "strength",
@@ -75,7 +74,14 @@ class Collect(object):
         for name, keys in self.kwargs.items():
             name = name.replace("_keys", "")
             assert isinstance(keys, Sequence)
-            data[name] = torch.cat([data_dict[key].float() for key in keys], dim=1)
+            # data[name] = torch.cat([data_dict[key].float() for key in keys], dim=1)
+            tensors = []
+            for key in keys:
+                tensor = data_dict[key].float()
+                if tensor.dim() == 1:  # 如果是 [n]，扩展成 [n, 1]
+                    tensor = tensor.unsqueeze(1)
+                tensors.append(tensor)
+            data[name] = torch.cat(tensors, dim=1)  # [n, c + m]（m 是额外拼接的 1D Tensor 数量）
         return data
 
 

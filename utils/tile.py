@@ -19,9 +19,11 @@ class LASProcessor:
                  label_remap: bool = False,
                  label_count: bool = False,
                  output_format: Literal["las", "npy"] = "las",
+                 save_echo_ratio: bool = False,
                  save_color: bool = False,
                  save_intensity: bool = False,
                  save_normal: bool = False,
+                 save_index: bool = False,
                  test_mode: bool = False):
         """
         Initialize LAS point cloud processor.
@@ -49,9 +51,11 @@ class LASProcessor:
         self.label_remap = label_remap
         self.label_count = label_count
         self.output_format = output_format
+        self.save_echo_ratio = save_echo_ratio
         self.save_color = save_color
         self.save_intensity = save_intensity
         self.save_normal = save_normal
+        self.save_index = save_index
         self.test_mode = test_mode
         
         # For label remapping and counting
@@ -519,7 +523,8 @@ class LASProcessor:
             np.save(segment_folder / "coord.npy", coords)
             
             # Always save original indices (required)
-            np.save(segment_folder / "index.npy", segment_indices)
+            if self.save_index:
+                np.save(segment_folder / "index.npy", segment_indices)
             
             # Handle labels (classification) - required, default to zeros if not present
             if self.test_mode:
@@ -549,6 +554,14 @@ class LASProcessor:
                     segment_labels = np.zeros(len(segment_indices), dtype=np.int32)
             
             np.save(segment_folder / "segment.npy", segment_labels)
+            
+            # Save Echo Ration(Return Number/Number of Returns) if requested and available
+            if self.save_echo_ratio and all(hasattr(las_data, dim) for dim in ['return_number', 'number_of_returns']):
+                echo_ratio=las_data.return_number[segment_indices]/las_data.number_of_returns[segment_indices]
+                np.save(segment_folder / "echo_ratio.npy", echo_ratio)
+            elif self.save_echo_ratio:
+                echo_ratio=np.ones(len(segment_indices),dtype=np.uint16)
+                np.save(segment_folder / "echo_ratio.npy", echo_ratio)
             
             # Save color if requested and available
             if self.save_color and all(hasattr(las_data, dim) for dim in ['red', 'green', 'blue']):
@@ -592,7 +605,8 @@ class LASProcessor:
 def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0), 
                       min_points=None, max_points=None, 
                       ignore_labels=None, label_remap=False, label_count=False,
-                      output_format="las", save_color=False, save_intensity=False, save_normal=False,
+                      output_format="las", 
+                      save_echo_ratio=False, save_color=False, save_intensity=False, save_normal=False, save_index=False,
                       test_mode=False):
     """
     Process LAS files with rectangular windowing and adaptive segmentation.
@@ -621,9 +635,11 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
         label_remap=label_remap,
         label_count=label_count,
         output_format=output_format,
+        save_echo_ratio=save_echo_ratio,
         save_color=save_color,
         save_intensity=save_intensity,
         save_normal=save_normal,
+        save_index = save_index,
         test_mode=test_mode
     )
     
@@ -632,19 +648,21 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"D:\data\天津样例数据\细粒度\test"
-    output_dir=r"D:\data\天津样例数据\细粒度\npy\test"
+    input_path=r"D:\data\天津样例数据\粗粒度4\test"
+    output_dir=r"D:\data\天津样例数据\粗粒度4\npy\test"
     window_size=(100., 100.)
     min_points=4096
     max_points=65536
     # ignore_labels=[1,3,4,7,9,12,13,15,20,21,22,27,28,29]
-    ignore_labels=[]
+    ignore_labels=[0,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
     label_remap=True
     label_count=True
     output_format="npy"
+    save_echo_ratio=True
     save_color=False
     save_intensity=False
     save_normal=False
+    save_index=False
     test_mode=False
     
     process_las_files(
@@ -657,8 +675,10 @@ if __name__ == "__main__":
         label_remap=label_remap,
         label_count=label_count,
         output_format=output_format,
+        save_echo_ratio=save_echo_ratio,
         save_color=save_color,
         save_intensity=save_intensity,
         save_normal=save_normal,
+        save_index=save_index,
         test_mode=test_mode
     )
