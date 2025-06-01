@@ -79,8 +79,8 @@ __global__ void knn_query_cuda_kernel(int m, int nsample, const float *__restric
     float new_y = new_xyz[1];
     float new_z = new_xyz[2];
 
-    float best_dist[128];
-    int best_idx[128];
+    float best_dist[1024];
+    int best_idx[1024];
     for(int i = 0; i < nsample; i++){
         best_dist[i] = 1e10;
         best_idx[i] = -1;
