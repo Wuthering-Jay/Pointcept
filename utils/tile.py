@@ -223,64 +223,91 @@ class LASProcessor:
             self.save_segments_as_las(las_file, las_data, original_segments)
         else:  # "npy"
             self.save_segments_as_npy(las_file, las_data, original_segments)
-    
-    def segment_point_cloud(self, points: np.ndarray) -> List[np.ndarray]:
-        """
-        Segment the point cloud into rectangular windows and apply thresholds.
-        
-        Args:
-            points: Nx3 array of point coordinates (x, y, z)
             
-        Returns:
-            List of index arrays, each representing points in a segment
-        """
-        # Get bounding box
+    def segment_point_cloud(self, points: np.ndarray) -> List[np.ndarray]:
         min_x, min_y = np.min(points[:, 0]), np.min(points[:, 1])
         max_x, max_y = np.max(points[:, 0]), np.max(points[:, 1])
-        
-        # Calculate number of windows (no overlap)
         x_size, y_size = self.window_size
         
         num_windows_x = max(1, int(np.ceil((max_x - min_x) / x_size)))
         num_windows_y = max(1, int(np.ceil((max_y - min_y) / y_size)))
         
-        # Create initial segments by rectangular windows
-        segments = []
-        total_windows = num_windows_x * num_windows_y
+        # 计算每个点所属的窗口索引
+        x_bins = np.clip(((points[:, 0] - min_x) / x_size).astype(int), 0, num_windows_x - 1)
+        y_bins = np.clip(((points[:, 1] - min_y) / y_size).astype(int), 0, num_windows_y - 1)
         
-        with tqdm(total=total_windows, desc="Creating segments", unit="segment",position=0) as pbar:
-            for i in range(num_windows_x):
-                for j in range(num_windows_y):
-                    x_min = min_x + i * x_size
-                    y_min = min_y + j * y_size
-                    x_max = min(max_x, x_min + x_size)
-                    y_max = min(max_y, y_min + y_size)
-                    
-                    # Find points in this window (exclusive on max boundaries to avoid duplicates)
-                    # Except for the last window in each dimension
-                    x_condition = (points[:, 0] >= x_min) & \
-                                ((points[:, 0] < x_max) if i < num_windows_x - 1 else (points[:, 0] <= x_max))
-                    y_condition = (points[:, 1] >= y_min) & \
-                                ((points[:, 1] < y_max) if j < num_windows_y - 1 else (points[:, 1] <= y_max))
-                    
-                    mask = x_condition & y_condition
-                    indices = np.where(mask)[0]
-                    
-                    if len(indices) > 0:
-                        segments.append(indices)
-                    
-                    pbar.update(1)
+        # 组合窗口索引
+        window_ids = x_bins * num_windows_y + y_bins
         
-        # Apply thresholds independently based on which ones are provided
-        # If max_points is specified, subdivide large segments
+        # 分组
+        unique_ids, indices = np.unique(window_ids, return_inverse=True)
+        segments = [np.where(indices == i)[0] for i in range(len(unique_ids))]
+        
+        # 后续阈值处理保持不变
         if self.max_points is not None:
             segments = self.apply_max_threshold(points, segments)
-        
-        # If min_points is specified, merge small segments
         if self.min_points is not None:
             segments = self.apply_min_threshold(points, segments)
             
         return segments
+    
+    # def segment_point_cloud(self, points: np.ndarray) -> List[np.ndarray]:
+    #     """
+    #     Segment the point cloud into rectangular windows and apply thresholds.
+        
+    #     Args:
+    #         points: Nx3 array of point coordinates (x, y, z)
+            
+    #     Returns:
+    #         List of index arrays, each representing points in a segment
+    #     """
+    #     # Get bounding box
+    #     min_x, min_y = np.min(points[:, 0]), np.min(points[:, 1])
+    #     max_x, max_y = np.max(points[:, 0]), np.max(points[:, 1])
+        
+    #     # Calculate number of windows (no overlap)
+    #     x_size, y_size = self.window_size
+        
+    #     num_windows_x = max(1, int(np.ceil((max_x - min_x) / x_size)))
+    #     num_windows_y = max(1, int(np.ceil((max_y - min_y) / y_size)))
+        
+    #     # Create initial segments by rectangular windows
+    #     segments = []
+    #     total_windows = num_windows_x * num_windows_y
+        
+    #     with tqdm(total=total_windows, desc="Creating segments", unit="segment",position=0) as pbar:
+    #         for i in range(num_windows_x):
+    #             for j in range(num_windows_y):
+    #                 x_min = min_x + i * x_size
+    #                 y_min = min_y + j * y_size
+    #                 x_max = min(max_x, x_min + x_size)
+    #                 y_max = min(max_y, y_min + y_size)
+                    
+    #                 # Find points in this window (exclusive on max boundaries to avoid duplicates)
+    #                 # Except for the last window in each dimension
+    #                 x_condition = (points[:, 0] >= x_min) & \
+    #                             ((points[:, 0] < x_max) if i < num_windows_x - 1 else (points[:, 0] <= x_max))
+    #                 y_condition = (points[:, 1] >= y_min) & \
+    #                             ((points[:, 1] < y_max) if j < num_windows_y - 1 else (points[:, 1] <= y_max))
+                    
+    #                 mask = x_condition & y_condition
+    #                 indices = np.where(mask)[0]
+                    
+    #                 if len(indices) > 0:
+    #                     segments.append(indices)
+                    
+    #                 pbar.update(1)
+        
+    #     # Apply thresholds independently based on which ones are provided
+    #     # If max_points is specified, subdivide large segments
+    #     if self.max_points is not None:
+    #         segments = self.apply_max_threshold(points, segments)
+        
+    #     # If min_points is specified, merge small segments
+    #     if self.min_points is not None:
+    #         segments = self.apply_min_threshold(points, segments)
+            
+    #     return segments
     
     def apply_max_threshold(self, points: np.ndarray, segments: List[np.ndarray]) -> List[np.ndarray]:
         """
@@ -648,13 +675,13 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"D:\data\天津样例数据\粗粒度4\test"
-    output_dir=r"D:\data\天津样例数据\粗粒度4\npy\test"
-    window_size=(100., 100.)
+    input_path=r"E:\data\DALES\dales_las\test"
+    output_dir=r"E:\data\DALES\dales_las\npy\test"
+    window_size=(50., 50.)
     min_points=4096
     max_points=65536
-    # ignore_labels=[1,3,4,7,9,12,13,15,20,21,22,27,28,29]
-    ignore_labels=[0,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+    ignore_labels = [0]
+    # ignore_labels=[0,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
     label_remap=True
     label_count=True
     output_format="npy"

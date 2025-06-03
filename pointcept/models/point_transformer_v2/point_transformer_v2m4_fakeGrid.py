@@ -589,6 +589,7 @@ class PointTransformerV2(nn.Module):
         self,
         in_channels,
         num_classes,
+        grid_size,
         patch_embed_depth=1,
         patch_embed_channels=48,
         patch_embed_groups=6,
@@ -613,6 +614,7 @@ class PointTransformerV2(nn.Module):
         super(PointTransformerV2, self).__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
+        self.grid_size=grid_size
         self.num_stages = len(enc_depths)
         assert self.num_stages == len(dec_depths)
         assert self.num_stages == len(enc_channels)
@@ -695,6 +697,21 @@ class PointTransformerV2(nn.Module):
             if num_classes > 0
             else nn.Identity()
         )
+        
+        # 输入体素化
+        self.voxlize=GridPool(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            grid_size=self.grid_size
+        )
+        
+        # 输出逆体素化
+        self.de_voxelize=UnpoolWithSkip(
+            in_channels=dec_channels[0],
+            out_channels=dec_channels[0],
+            skip_channels=in_channels,
+            backend="interp"
+        )
 
     def forward(self, data_dict):
         """
@@ -707,6 +724,8 @@ class PointTransformerV2(nn.Module):
 
         # a batch of point cloud is a list of coord, feat and offset
         points = [coord, feat, offset]
+        points_origin=[t.clone() for t in points]
+        points, cluster_v = self.voxlize(points)
         points = self.patch_embed(points)
         skips = [[points]] # 便于添加cluster
         for i in range(self.num_stages):
@@ -719,6 +738,8 @@ class PointTransformerV2(nn.Module):
         for i in reversed(range(self.num_stages)):
             skip_points, cluster = skips.pop(-1)
             points = self.dec_stages[i](points, skip_points, cluster) # 上采样
+        # coord, feat, offset = points
+        points = self.de_voxelize(points,points_origin)
         coord, feat, offset = points
         seg_logits = self.seg_head(feat) # [n, num_classes]
         return seg_logits

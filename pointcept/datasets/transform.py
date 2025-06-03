@@ -934,6 +934,9 @@ class GridSample(object):
         key_sort = key[idx_sort]
         # 计算网格索引和点数统计
         _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
+        a=count.max()
+        if a>3:
+            print(a)
         if self.mode == "train":  # train mode
             # 格网中随机采样
             idx_select = (
