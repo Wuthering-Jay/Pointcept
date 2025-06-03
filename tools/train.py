@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
 from pointcept.engines.defaults import (
     default_argument_parser,
     default_config_parser,
@@ -23,7 +24,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-    config_file = "configs/tj_c/semseg-pt-v2m2-0-base.py"
+    config_file = "configs/dales/semseg-pt-v2m4.py"
     options = None
 
     cfg = default_config_parser(config_file, options)

@@ -76,7 +76,7 @@ scheduler = dict(
 # dataset settings
 dataset_type = "PointCloudDataset"
 # data_root = "data/semantic_kitti"
-data_root = "E:\\data\\Dales\\dales_las\\npy"
+data_root = r"E:\data\DALES\dales_las\npy"
 
 ignore_index = -1
 names = [
@@ -97,7 +97,7 @@ data = dict(
     names=names,
     train=dict(
         type=dataset_type,
-        split="test",
+        split="train",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=False),
