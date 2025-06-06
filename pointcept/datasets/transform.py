@@ -167,6 +167,45 @@ class NormalizeCoord(object):
             m = np.max(np.sqrt(np.sum(data_dict["coord"] ** 2, axis=1)))
             data_dict["coord"] = data_dict["coord"] / m
         return data_dict
+    
+    
+@TRANSFORMS.register_module()
+# 减去均值除以标准差（标准化）
+class StandardNormalize(object):
+    def __init__(self, apply_z=True):
+        self.apply_z = apply_z
+
+    def __call__(self, data_dict):
+        if "coord" in data_dict.keys():
+            mean = data_dict["coord"].mean(axis=0)
+            std = data_dict["coord"].std(axis=0)
+            if not self.apply_z:
+                mean[2] = 0
+                std[2] = 1
+            # 避免除以0
+            std[std == 0] = 1
+            data_dict["coord"] = (data_dict["coord"] - mean) / std
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+# 减去最小值除以最大最小值之差（MinMax归一化）
+class MinMaxNormalize(object):
+    def __init__(self, apply_z=True):
+        self.apply_z = apply_z
+
+    def __call__(self, data_dict):
+        if "coord" in data_dict.keys():
+            min_vals = data_dict["coord"].min(axis=0)
+            max_vals = data_dict["coord"].max(axis=0)
+            if not self.apply_z:
+                min_vals[2] = 0
+                max_vals[2] = 1
+            # 计算范围，避免除以0
+            ranges = max_vals - min_vals
+            ranges[ranges == 0] = 1
+            data_dict["coord"] = (data_dict["coord"] - min_vals) / ranges
+        return data_dict
 
 
 @TRANSFORMS.register_module()

@@ -397,11 +397,11 @@ def merge_las_segments(input_path, output_dir=None, input_format="las",
     
 if __name__ == "__main__":
     
-    input_path=r"D:\data\天津样例数据\粗粒度4\npy\test"
-    output_dir=r"D:\data\天津样例数据\粗粒度4\pred"
+    input_path=r"E:\data\OpenGF\npy\test"
+    output_dir=r"E:\data\OpenGF\npy\pred"
     input_format="npy"
     label_file="pred"
-    label_remap_file=r"D:\data\天津样例数据\粗粒度4\npy\train\label_mapping.json"
+    label_remap_file=r"E:\data\OpenGF\npy\train\label_mapping.json"
     template_las_file=None
     
     merge_las_segments(
