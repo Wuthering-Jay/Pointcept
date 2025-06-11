@@ -973,9 +973,6 @@ class GridSample(object):
         key_sort = key[idx_sort]
         # 计算网格索引和点数统计
         _, inverse, count = np.unique(key_sort, return_inverse=True, return_counts=True)
-        a=count.max()
-        if a>3:
-            print(a)
         if self.mode == "train":  # train mode
             # 格网中随机采样
             idx_select = (
@@ -1083,7 +1080,106 @@ class GridSample(object):
             hashed_arr *= np.uint64(1099511628211)
             hashed_arr = np.bitwise_xor(hashed_arr, arr[:, j])
         return hashed_arr
+    
 
+@TRANSFORMS.register_module()
+class RandomSample(object):
+    """
+    对批次中的每个点云进行随机采样。
+
+    Args:
+        num_points (int): 每个点云采样后要保留的目标点数。
+        mode (str): 模式，'train' 或 'test'。
+        overlap_ratio (float): [仅用于 test 模式] 相邻分块的重叠率，范围 [0, 1)。
+                               0 表示不重叠，0.5 表示 50% 重叠。
+    """
+    def __init__(self, num_points=4096, mode="train", overlap_ratio=0.5):
+        self.num_points = num_points
+        assert mode in ["train", "test"]
+        self.mode = mode
+
+        if self.mode == 'test':
+            assert 0 <= overlap_ratio < 1, "重叠率必须在 [0, 1) 范围内"
+            self.overlap_ratio = overlap_ratio
+
+    def __call__(self, data_dict):
+        coord = data_dict["coord"]
+        offset = data_dict["offset"]
+        start_indices = np.concatenate([[0], offset[:-1]])
+
+        if self.mode == "train":
+            # ---------- 训练模式 (逻辑不变) ----------
+            selected_indices_list = []
+            new_offset = []
+            
+            for i in range(len(offset)):
+                start_idx = start_indices[i]
+                end_idx = offset[i]
+                num_points_in_cloud = end_idx - start_idx
+                original_cloud_indices = np.arange(start_idx, end_idx)
+
+                if num_points_in_cloud >= self.num_points:
+                    selected = np.random.choice(original_cloud_indices, self.num_points, replace=False)
+                else:
+                    selected = original_cloud_indices
+                
+                selected_indices_list.append(selected)
+                new_offset.append(len(selected) + (new_offset[-1] if new_offset else 0))
+
+            final_indices = np.concatenate(selected_indices_list)
+            sampled_data_dict = index_operator(data_dict, final_indices)
+            sampled_data_dict["offset"] = np.array(new_offset)
+            
+            return sampled_data_dict
+
+
+        elif self.mode == "test":
+            # ---------- 测试模式 ----------
+            data_part_list = []
+            step = max(1, int(self.num_points * (1 - self.overlap_ratio)))
+            all_chunks = []
+            for i in range(len(offset)):
+                start_idx, end_idx = start_indices[i], offset[i]
+                num_points_in_cloud = end_idx - start_idx
+                original_cloud_indices = np.arange(start_idx, end_idx)
+                
+                # 点云太小，直接作为一个块
+                if num_points_in_cloud <= self.num_points:
+                    chunks = [original_cloud_indices]
+                else:
+                    # 点数充足，使用计算好的步长进行滑窗采样
+                    np.random.shuffle(original_cloud_indices) # 打乱以增加随机性
+                    chunks = [
+                        original_cloud_indices[j: j + self.num_points]
+                        for j in range(0, num_points_in_cloud, step)
+                    ]
+                    # 确保最后一个点被包含
+                    if len(chunks[-1]) < self.num_points and chunks[-1][-1] < original_cloud_indices[-1]:
+                         chunks.append(original_cloud_indices[-self.num_points:])
+
+                all_chunks.append(chunks)
+
+            max_chunks = max(len(c) for c in all_chunks) if all_chunks else 0
+
+            for i in range(max_chunks):
+                current_batch_indices = []
+                new_offset = []
+                for cloud_chunks in all_chunks:
+                    if i < len(cloud_chunks):
+                        chunk_to_add = cloud_chunks[i]
+                    else:
+                        random_chunk_index = np.random.randint(0, len(cloud_chunks))
+                        chunk_to_add = cloud_chunks[random_chunk_index]
+                    current_batch_indices.append(chunk_to_add)
+                    new_offset.append(len(chunk_to_add) + (new_offset[-1] if new_offset else 0))
+                
+                final_indices = np.concatenate(current_batch_indices)
+                data_part = index_operator(data_dict, final_indices)
+                data_part["offset"] = np.array(new_offset)
+                data_part_list.append(data_part)
+                
+            return data_part_list
+        
 
 @TRANSFORMS.register_module()
 # 球体裁剪

@@ -313,42 +313,130 @@
 # print(f"Output feature shape: {output_feat.shape}")
 
 
+# import numpy as np
+# import laspy
+
+
+# def npy_to_las(npy_path, las_path):
+#     """
+#     将存储n*3坐标的NPY文件转换为LAS点云文件
+
+#     参数:
+#         npy_path: 输入的NPY文件路径
+#         las_path: 输出的LAS文件路径
+#     """
+#     # 读取NPY文件
+#     coords = np.load(npy_path)
+
+#     # 验证数据形状
+#     if coords.shape[1] != 3:
+#         raise ValueError("输入数据必须是n*3的坐标数组")
+
+#     # 创建LAS文件头
+#     header = laspy.LasHeader(point_format=0, version="1.2")
+
+#     # 创建LAS文件
+#     las = laspy.LasData(header)
+
+#     # 设置坐标
+#     las.x = coords[:, 0]
+#     las.y = coords[:, 1]
+#     las.z = coords[:, 2]
+
+#     # 保存LAS文件
+#     las.write(las_path)
+#     print(f"成功将 {npy_path} 转换为 {las_path}")
+
+
+# # 使用示例
+# npy_file = r"D:\data\天津样例数据\细粒度8\npy\testsa\8平原分类前1sa_segment_000\coord.npy"  # 输入的NPY文件，需要指定为npy文件夹下的coord.npy文件
+# las_file = r"D:\data\天津样例数据\细粒度8\npy\output.las"  # 输出的LAS文件
+# npy_to_las(npy_file, las_file)
 import numpy as np
 import laspy
+from tqdm import tqdm
+from scipy.spatial import cKDTree
+import time
 
-
-def npy_to_las(npy_path, las_path):
+def modify_class_by_proximity(input_las_path, output_las_path, distance_threshold=0.05):
     """
-    将存储n*3坐标的NPY文件转换为LAS点云文件
-
-    参数:
-        npy_path: 输入的NPY文件路径
-        las_path: 输出的LAS文件路径
+    使用KD树优化的方法修改距离类别17点很近的类别1点
+    
+    Args:
+        input_las_path (str): 输入LAS文件路径
+        output_las_path (str): 输出LAS文件路径
+        distance_threshold (float): 距离阈值（米），默认0.05m
     """
-    # 读取NPY文件
-    coords = np.load(npy_path)
+    print("Reading LAS file...")
+    start_time = time.time()
+    
+    # 读取LAS文件
+    las = laspy.read(input_las_path)
+    
+    # 获取点坐标
+    points = np.vstack((las.x, las.y, las.z)).transpose()
+    
+    # 获取分类数组
+    classification = las.classification
+    
+    # 找到类别1和类别17的点的索引
+    class_1_indices = np.where(classification == 1)[0]
+    class_17_indices = np.where(classification == 17)[0]
+    
+    print(f"Found {len(class_1_indices)} points in class 1")
+    print(f"Found {len(class_17_indices)} points in class 17")
+    
+    if len(class_17_indices) == 0:
+        print("No class 17 points found in the file.")
+        return
+    
+    # 获取类别1和类别17的点坐标
+    class_1_points = points[class_1_indices]
+    class_17_points = points[class_17_indices]
+    
+    print("\nBuilding KD-Tree...")
+    # 构建KD树
+    tree = cKDTree(class_17_points)
+    
+    print("Finding nearest neighbors...")
+    # 使用KD树查询最近邻
+    # 返回到最近点的距离
+    distances, _ = tree.query(class_1_points, k=1)
+    
+    # 找到距离在阈值内的点
+    points_to_modify_mask = distances <= distance_threshold
+    points_to_modify = class_1_indices[points_to_modify_mask]
+    
+    # 修改分类
+    classification[points_to_modify] = 17
+    
+    print("\nCreating output LAS file...")
+    # 创建输出LAS文件
+    output_las = laspy.LasData(las.header)
+    output_las.points = las.points
+    output_las.classification = classification
+    
+    # 保存修改后的LAS文件
+    print("Saving modified LAS file...")
+    output_las.write(output_las_path)
+    
+    end_time = time.time()
+    processing_time = end_time - start_time
+    
+    print(f"\nProcessing complete:")
+    print(f"- Modified {len(points_to_modify)} points from class 1 to class 17")
+    print(f"- Processing time: {processing_time:.2f} seconds")
+    print(f"- Output saved to: {output_las_path}")
 
-    # 验证数据形状
-    if coords.shape[1] != 3:
-        raise ValueError("输入数据必须是n*3的坐标数组")
-
-    # 创建LAS文件头
-    header = laspy.LasHeader(point_format=0, version="1.2")
-
-    # 创建LAS文件
-    las = laspy.LasData(header)
-
-    # 设置坐标
-    las.x = coords[:, 0]
-    las.y = coords[:, 1]
-    las.z = coords[:, 2]
-
-    # 保存LAS文件
-    las.write(las_path)
-    print(f"成功将 {npy_path} 转换为 {las_path}")
-
-
-# 使用示例
-npy_file = r"D:\data\天津样例数据\细粒度8\npy\testsa\8平原分类前1sa_segment_000\coord.npy"  # 输入的NPY文件，需要指定为npy文件夹下的coord.npy文件
-las_file = r"D:\data\天津样例数据\细粒度8\npy\output.las"  # 输出的LAS文件
-npy_to_las(npy_file, las_file)
+# 示例使用
+if __name__ == "__main__":
+    input_file = r"E:\data\洛杉矶高架点云\城区+高架+铁轨8-去噪.las"
+    output_file = r"E:\data\洛杉矶高架点云\城区+高架+铁轨8-去噪-new.las"
+    
+    print("=== LAS Point Cloud Classification Modifier ===")
+    print(f"Start time: 2025-06-11 09:43:00 UTC")
+    print(f"User: Wuthering-Jay")
+    print(f"Processing file: {input_file}")
+    print("-" * 45)
+    
+    modify_class_by_proximity(input_file, output_file, distance_threshold=2.5)
