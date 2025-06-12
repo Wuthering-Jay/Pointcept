@@ -367,6 +367,7 @@ def modify_class_by_proximity(input_las_path, output_las_path, distance_threshol
         output_las_path (str): 输出LAS文件路径
         distance_threshold (float): 距离阈值（米），默认0.05m
     """
+    class_=2
     print("Reading LAS file...")
     start_time = time.time()
     
@@ -381,7 +382,7 @@ def modify_class_by_proximity(input_las_path, output_las_path, distance_threshol
     
     # 找到类别1和类别17的点的索引
     class_1_indices = np.where(classification == 1)[0]
-    class_17_indices = np.where(classification == 17)[0]
+    class_17_indices = np.where(classification == class_)[0]
     
     print(f"Found {len(class_1_indices)} points in class 1")
     print(f"Found {len(class_17_indices)} points in class 17")
@@ -399,7 +400,7 @@ def modify_class_by_proximity(input_las_path, output_las_path, distance_threshol
     tree = cKDTree(class_17_points)
     
     print("Finding nearest neighbors...")
-    # 使用KD树查询最近邻
+    # 使用KD树查询最近邻+
     # 返回到最近点的距离
     distances, _ = tree.query(class_1_points, k=1)
     
@@ -408,7 +409,7 @@ def modify_class_by_proximity(input_las_path, output_las_path, distance_threshol
     points_to_modify = class_1_indices[points_to_modify_mask]
     
     # 修改分类
-    classification[points_to_modify] = 17
+    classification[points_to_modify] = class_
     
     print("\nCreating output LAS file...")
     # 创建输出LAS文件
@@ -430,8 +431,8 @@ def modify_class_by_proximity(input_las_path, output_las_path, distance_threshol
 
 # 示例使用
 if __name__ == "__main__":
-    input_file = r"E:\data\洛杉矶高架点云\城区+高架+铁轨8-去噪.las"
-    output_file = r"E:\data\洛杉矶高架点云\城区+高架+铁轨8-去噪-new.las"
+    input_file = r"E:\data\连云港\连云港-new.las"
+    output_file = r"E:\data\连云港\连云港-new.las"
     
     print("=== LAS Point Cloud Classification Modifier ===")
     print(f"Start time: 2025-06-11 09:43:00 UTC")
@@ -439,4 +440,4 @@ if __name__ == "__main__":
     print(f"Processing file: {input_file}")
     print("-" * 45)
     
-    modify_class_by_proximity(input_file, output_file, distance_threshold=2.5)
+    modify_class_by_proximity(input_file, output_file, distance_threshold=1)
