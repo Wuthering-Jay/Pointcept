@@ -1083,8 +1083,6 @@ class GridSample(object):
             hashed_arr = np.bitwise_xor(hashed_arr, arr[:, j])
         return hashed_arr
     
-
-
 def partition_voxels_for_test(idx_sort, count, max_test_loops):
     """
     为测试模式对体素化的点云进行分区 (已修正逻辑)。
@@ -1119,11 +1117,13 @@ def partition_voxels_for_test(idx_sort, count, max_test_loops):
         all_chunks.append(chunks)
 
     # 4. 重新组合成 `num_actual_loops` 个批次的索引列表
+    chunk_counts=count
+    chunk_counts[chunk_counts > num_actual_loops] = num_actual_loops
     list_of_batch_indices = []
     for i in range(num_actual_loops):
         current_batch_indices = []
-        for voxel_chunks in all_chunks:
-            current_batch_indices.append(voxel_chunks[i])
+        for j, voxel_chunks in enumerate(all_chunks):
+            current_batch_indices.append(voxel_chunks[i%chunk_counts[j]])
         
         final_indices = np.concatenate(current_batch_indices)
         list_of_batch_indices.append(final_indices)
@@ -1250,7 +1250,6 @@ class GridSample_Maxloop(GridSample):
         else:
             raise NotImplementedError
 
-
 @TRANSFORMS.register_module()
 class RandomSample(object):
     """
@@ -1262,7 +1261,12 @@ class RandomSample(object):
         overlap_ratio (float): [仅用于 test 模式] 相邻分块的重叠率，范围 [0, 1)。
                                0 表示不重叠，0.5 表示 50% 重叠。
     """
-    def __init__(self, num_points=4096, mode="train", overlap_ratio=0.5):
+    def __init__(
+        self, 
+        num_points=4096,
+        mode="train", 
+        overlap_ratio=0.5
+        ):
         self.num_points = num_points
         assert mode in ["train", "test"]
         self.mode = mode
@@ -1273,8 +1277,10 @@ class RandomSample(object):
 
     def __call__(self, data_dict):
         coord = data_dict["coord"]
-        offset = data_dict["offset"]
+        # offset = data_dict["offset"]
+        offset = [coord.shape[0]]
         start_indices = np.concatenate([[0], offset[:-1]])
+        start_indices = start_indices.astype(int)
 
         if self.mode == "train":
             # ---------- 训练模式 (逻辑不变) ----------
@@ -1297,7 +1303,7 @@ class RandomSample(object):
 
             final_indices = np.concatenate(selected_indices_list)
             sampled_data_dict = index_operator(data_dict, final_indices)
-            sampled_data_dict["offset"] = np.array(new_offset)
+            # sampled_data_dict["offset"] = np.array(new_offset)
             
             return sampled_data_dict
 
@@ -1343,13 +1349,13 @@ class RandomSample(object):
                     new_offset.append(len(chunk_to_add) + (new_offset[-1] if new_offset else 0))
                 
                 final_indices = np.concatenate(current_batch_indices)
-                data_part = index_operator(data_dict, final_indices)
-                data_part["offset"] = np.array(new_offset)
+                data_part = index_operator(data_dict, final_indices,duplicate=True)
+                # data_part["offset"] = np.array(new_offset)
+                data_part["index"] = final_indices
                 data_part_list.append(data_part)
                 
             return data_part_list
         
-
 @TRANSFORMS.register_module()
 # 球体裁剪
 class SphereCrop(object):
