@@ -1,4 +1,5 @@
 import json
+import numpy as np
 
 def extract_sorted_weights(file_path):
     # 1. 读取 JSON 文件
@@ -24,3 +25,14 @@ def extract_label_id(file_path):
     keys_list = sorted(data.keys(), key=lambda x: int(x))
     
     return keys_list
+
+def extract_sample_weights(file_path):
+    
+    with open(file_path, 'r') as f:
+        weights_dict = json.load(f)
+
+    weights_list = list(weights_dict.values())
+
+    weights_np = np.array(weights_list, dtype=np.float32)
+    
+    return weights_np

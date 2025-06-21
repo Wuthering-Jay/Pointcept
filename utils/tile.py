@@ -9,15 +9,17 @@ from tqdm import tqdm
 from collections import defaultdict, Counter
 
 class LASProcessor:
-    def __init__(self, 
+    def __init__(self,
                  input_path: Union[str, Path],
                  output_dir: Union[str, Path] = None,
                  window_size: Tuple[float, float] = (50.0, 50.0),
                  min_points: Optional[int] = 1000,
                  max_points: Optional[int] = 5000,
-                 ignore_labels: List[int] = None,
+                 ignore_labels: Optional[List[int]] = None,
+                 require_labels: Optional[List[int]] = None,
                  label_remap: bool = False,
                  label_count: bool = False,
+                 save_sample_weight: bool = False,
                  output_format: Literal["las", "npy"] = "las",
                  save_echo_ratio: bool = False,
                  save_color: bool = False,
@@ -34,7 +36,8 @@ class LASProcessor:
             window_size: (x_size, y_size) for rectangular windows (in units of the LAS file)
             min_points: Minimum points threshold for a valid segment (None to skip)
             max_points: Maximum points threshold before further segmentation (None to skip)
-            ignore_labels: List of label values to ignore during processing
+            ignore_labels: List of label values to ignore during processing.
+            require_labels: List of label values to keep during processing.
             label_remap: Whether to remap labels to continuous values
             label_count: Whether to count labels and calculate weights
             output_format: Output format ("las" or "npy")
@@ -47,9 +50,17 @@ class LASProcessor:
         self.window_size = window_size
         self.min_points = min_points
         self.max_points = max_points
+
+        # 确保 ignore_labels 和 require_labels 不会同时使用
+        if ignore_labels and require_labels:
+            raise ValueError("`ignore_labels` and `require_labels` cannot be used at the same time.")
+
         self.ignore_labels = set(ignore_labels) if ignore_labels else set()
+        self.require_labels = set(require_labels) if require_labels else set()
+        
         self.label_remap = label_remap
         self.label_count = label_count
+        self.save_sample_weight = save_sample_weight
         self.output_format = output_format
         self.save_echo_ratio = save_echo_ratio
         self.save_color = save_color
@@ -58,13 +69,18 @@ class LASProcessor:
         self.save_index = save_index
         self.test_mode = test_mode
         
-        # For label remapping and counting
-        self.label_map = {}  # Will store original_label -> remapped_label
-        self.label_counts = defaultdict(int)  # Total counts across all files
-        self.file_label_counts = {}  # Counts per file
-        self.weights = {}  # Class weights
+        # 如果需要保存样本权重，则必须开启标签计数以计算类别权重
+        if self.save_sample_weight and not self.label_count:
+            print("Warning: `save_sample_weight` is True, so `label_count` is being automatically enabled to calculate class weights.")
+            self.label_count = True
         
-        # Create output directory if it doesn't exist
+        # For label remapping and counting
+        self.label_map = {}
+        self.label_counts = defaultdict(int)
+        self.file_label_counts = {}
+        self.weights = {}
+        self.sample_weights = {}
+        
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True)
             
@@ -81,22 +97,25 @@ class LASProcessor:
     
     def process_all_files(self):
         """Process all discovered LAS files."""
-        # First pass: collect all unique labels if remapping is enabled
         if self.label_remap or self.label_count:
             self._collect_labels()
-            
-        # Second pass: process and segment files
+        
+        # 只有在 label_count 为 True 时才会计算权重
+        if self.label_count:
+            self._calculate_weights()
+
         for las_file in tqdm(self.las_files, desc="Processing files", unit="file",position=0):
             print(f"Processing {las_file}...")
             self.process_file(las_file)
             
-        # Save label map and counts if enabled
         if self.label_remap:
             self._save_label_map()
             
         if self.label_count:
-            self._calculate_weights()
             self._save_label_stats()
+            
+        if self.save_sample_weight:
+            self._save_sample_weights_json()
     
     def _collect_labels(self):
         """Collect all unique labels from all files for remapping and counting."""
@@ -108,27 +127,30 @@ class LASProcessor:
                 las_data = fh.read()
                 
                 if hasattr(las_data, 'classification'):
-                    # Create a mask for non-ignored labels
+                    # 根据 ignore_labels 或 require_labels 创建掩码
                     mask = np.ones(len(las_data.classification), dtype=bool)
-                    for label in self.ignore_labels:
-                        mask &= (las_data.classification != label)
+                    if self.ignore_labels:
+                        for label in self.ignore_labels:
+                            mask &= (las_data.classification != label)
+                    elif self.require_labels:
+                        # 如果指定了 require_labels，则只保留这些类别的点
+                        required_mask = np.zeros_like(mask)
+                        for label in self.require_labels:
+                            required_mask |= (las_data.classification == label)
+                        mask = required_mask
                     
-                    # Find unique labels (vectorized)
                     valid_labels = np.unique(las_data.classification[mask])
                     unique_labels.update(valid_labels)
                     
-                    # Count labels per file if label_count is enabled (vectorized)
                     if self.label_count:
-                        # Get unique labels and their counts
                         unique_file_labels, counts = np.unique(las_data.classification[mask], return_counts=True)
                         file_counts = {int(label): int(count) for label, count in zip(unique_file_labels, counts)}
                         self.file_label_counts[las_file.name] = file_counts
                         
-                        # Update total counts
                         for label, count in file_counts.items():
                             self.label_counts[int(label)] += count
-        
-        # Create label mapping if remapping is enabled
+                            
+        self.label_counts = dict(sorted(self.label_counts.items()))
         if self.label_remap:
             sorted_labels = sorted(unique_labels)
             self.label_map = {int(original): i for i, original in enumerate(sorted_labels)}
@@ -144,22 +166,18 @@ class LASProcessor:
         
         for label, count in self.label_counts.items():
             frequency = count / total_points
-            # Inverse frequency weight, normalized to sum to 1
-            self.weights[int(label)] = 1.0 / max(frequency, 1e-6)
-            
-        # Normalize weights to sum to 1
+            self.weights[int(label)] = (1.0 / max(frequency, 1e-6)).astype(np.float32)
+
         weight_sum = sum(self.weights.values())
         if weight_sum > 0:
             for label in self.weights:
                 self.weights[label] /= weight_sum
-                
+            
         print(f"Calculated class weights: {self.weights}")
     
     def _save_label_map(self):
         """Save label mapping to JSON file."""
         map_file = self.output_dir / "label_mapping.json"
-        
-        # Convert to strings for JSON serialization
         json_map = {str(k): int(v) for k, v in self.label_map.items()}
         
         with open(map_file, 'w') as f:
@@ -171,7 +189,6 @@ class LASProcessor:
         """Save label statistics to JSON file."""
         stats_file = self.output_dir / "label_statistics.json"
         
-        # Convert defaultdict to regular dict with integer keys as strings
         stats = {
             "total_counts": {str(k): int(v) for k, v in self.label_counts.items()},
             "file_counts": {
@@ -185,25 +202,44 @@ class LASProcessor:
             json.dump(stats, f, indent=2)
             
         print(f"Saved label statistics to {stats_file}")
+        
+    def _save_sample_weights_json(self):
+        """将收集到的所有样本权重保存到一个JSON文件中。"""
+        if not self.sample_weights:
+            print("Warning: No sample weights were calculated, JSON file will not be created.")
+            return
+
+        output_path = self.output_dir / "sample_weights.json"
+        print(f"Saving sample weights for {len(self.sample_weights)} segments to {output_path}...")
+        
+        with open(output_path, 'w') as f:
+            json.dump(self.sample_weights, f, indent=2)
+            
+        print("Successfully saved sample weights JSON file.")
     
     def process_file(self, las_file: Union[str, Path]):
         """Process a single LAS file."""
         las_file = Path(las_file)
         
-        # Read the LAS file
         with laspy.open(las_file) as fh:
             las_data = fh.read()
         
-        # Create a mask for points that should be included (not in ignore_labels)
+        # 创建掩码以选择要包含的点
         included_mask = np.ones(len(las_data.points), dtype=bool)
-        if hasattr(las_data, 'classification') and self.ignore_labels:
-            for label in self.ignore_labels:
-                included_mask &= (las_data.classification != label)
+        if hasattr(las_data, 'classification'):
+            if self.ignore_labels:
+                for label in self.ignore_labels:
+                    included_mask &= (las_data.classification != label)
+            elif self.require_labels:
+                # 如果指定了 require_labels，则只保留这些类别的点
+                required_mask = np.zeros_like(included_mask)
+                for label in self.require_labels:
+                    required_mask |= (las_data.classification == label)
+                included_mask = required_mask
         
-        # Get coordinates of included points
         included_indices = np.where(included_mask)[0]
         if len(included_indices) == 0:
-            print(f"  Warning: No valid points found in {las_file} after applying ignore_labels.")
+            print(f"  Warning: No valid points found in {las_file} after applying label filters.")
             return
         
         point_data = np.vstack((
@@ -212,16 +248,12 @@ class LASProcessor:
             las_data.z[included_mask]
         )).transpose()
         
-        # Segment the point cloud
         segments = self.segment_point_cloud(point_data)
-        
-        # Map segments back to original indices
         original_segments = [included_indices[segment] for segment in segments]
         
-        # Save segments
         if self.output_format == "las":
             self.save_segments_as_las(las_file, las_data, original_segments)
-        else:  # "npy"
+        else: # "npy"
             self.save_segments_as_npy(las_file, las_data, original_segments)
             
     def segment_point_cloud(self, points: np.ndarray) -> List[np.ndarray]:
@@ -537,9 +569,20 @@ class LASProcessor:
         print(f"Saving {len(segments)} segments as NPY files...")
         for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving NPY segments", unit="folder",position=0):
             # Create segment folder
+            segment_name = f"{base_name}_segment_{i:03d}"
             segment_folder = self.output_dir / f"{base_name}_segment_{i:03d}"
             segment_folder.mkdir(exist_ok=True)
             
+            if self.save_sample_weight:
+                current_sample_weight = 0.0
+                if hasattr(las_data, 'classification'):
+                    original_segment_labels = las_data.classification[segment_indices]
+                    unique_labels_in_segment = np.unique(original_segment_labels)
+                    current_sample_weight = sum(self.weights.get(label, 0.0) for label in unique_labels_in_segment)
+                
+                # 将权重存入字典，而不是保存为文件
+                self.sample_weights[segment_name] = float(current_sample_weight)
+
             # Always save coordinates (required)
             coords = np.vstack((
                 las_data.x[segment_indices],
@@ -584,7 +627,7 @@ class LASProcessor:
             
             # Save Echo Ration(Return Number/Number of Returns) if requested and available
             if self.save_echo_ratio and all(hasattr(las_data, dim) for dim in ['return_number', 'number_of_returns']):
-                echo_ratio=las_data.return_number[segment_indices]/las_data.number_of_returns[segment_indices]
+                echo_ratio=las_data.return_number[segment_indices]/(las_data.number_of_returns[segment_indices]+1e-6)
                 np.save(segment_folder / "echo_ratio.npy", echo_ratio)
             elif self.save_echo_ratio:
                 echo_ratio=np.ones(len(segment_indices),dtype=np.uint16)
@@ -628,30 +671,13 @@ class LASProcessor:
                 
                 np.save(segment_folder / "normal.npy", normals)
 
-
 def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0), 
                       min_points=None, max_points=None, 
-                      ignore_labels=None, label_remap=False, label_count=False,
+                      ignore_labels=None, require_labels=None, label_remap=False, label_count=False,
+                      save_sample_weight=False,
                       output_format="las", 
                       save_echo_ratio=False, save_color=False, save_intensity=False, save_normal=False, save_index=False,
                       test_mode=False):
-    """
-    Process LAS files with rectangular windowing and adaptive segmentation.
-    
-    Args:
-        input_path: Path to LAS file or directory containing LAS files
-        output_dir: Directory to save processed files (default: same as input)
-        window_size: (x_size, y_size) for rectangular windows
-        min_points: Minimum points threshold for a valid segment (None to skip)
-        max_points: Maximum points threshold before further segmentation (None to skip)
-        ignore_labels: List of label values to ignore during processing
-        label_remap: Whether to remap labels to continuous values
-        label_count: Whether to count labels and calculate weights
-        output_format: Format to save outputs ("las" or "npy")
-        save_color: Whether to save color data in NPY format
-        save_intensity: Whether to save intensity data in NPY format
-        save_normal: Whether to save normal data in NPY format
-    """
     processor = LASProcessor(
         input_path=input_path,
         output_dir=output_dir,
@@ -659,31 +685,35 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
         min_points=min_points,
         max_points=max_points,
         ignore_labels=ignore_labels,
+        require_labels=require_labels,
         label_remap=label_remap,
         label_count=label_count,
+        save_sample_weight=save_sample_weight,
         output_format=output_format,
         save_echo_ratio=save_echo_ratio,
         save_color=save_color,
         save_intensity=save_intensity,
         save_normal=save_normal,
-        save_index = save_index,
+        save_index=save_index,
         test_mode=test_mode
     )
-    
     processor.process_all_files()
     
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\DALES\dales_las\test"
-    output_dir=r"E:\data\DALES\dales_las\npy\test"
-    window_size=(50., 50.)
-    min_points=4096
+    input_path="/mnt/e/data/云南遥感中心/train"
+    output_dir="/mnt/e/data/云南遥感中心/npy/train"
+    window_size=(100., 100.)
+    min_points=4096*2
     max_points=65536
-    ignore_labels = [0]
-    # ignore_labels=[0,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+    # ignore_labels=[0,7,10,19]
+    # require_labels=None
+    ignore_labels=None
+    require_labels=[2,5,6,9,11,13,15]
     label_remap=True
     label_count=True
+    save_sample_weight=True 
     output_format="npy"
     save_echo_ratio=True
     save_color=False
@@ -699,8 +729,10 @@ if __name__ == "__main__":
         min_points=min_points,
         max_points=max_points,
         ignore_labels=ignore_labels,
+        require_labels=require_labels,
         label_remap=label_remap,
         label_count=label_count,
+        save_sample_weight=save_sample_weight,
         output_format=output_format,
         save_echo_ratio=save_echo_ratio,
         save_color=save_color,

@@ -8,6 +8,7 @@ Please cite our work if the code is helpful to you.
 import os
 import sys
 import weakref
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -30,6 +31,7 @@ from pointcept.utils.optimizer import build_optimizer
 from pointcept.utils.scheduler import build_scheduler
 from pointcept.utils.events import EventStorage, ExceptionWriter
 from pointcept.utils.registry import Registry
+from utils.misc import extract_sample_weights
 
 
 TRAINERS = Registry("trainers")
@@ -254,9 +256,15 @@ class Trainer(TrainerBase):
 
     def build_train_loader(self):
         train_data = build_dataset(self.cfg.data.train)
+        sample_weights_path = os.path.join(self.cfg.data_root,self.cfg.data.train.split,"sample_weights.json")
+        weighted_sampler = extract_sample_weights(sample_weights_path)
+        weighted_sampler = np.tile(weighted_sampler, self.cfg.data.train.loop)
+        weighted_sampler = torch.from_numpy(weighted_sampler).float()
 
         if comm.get_world_size() > 1:
             train_sampler = torch.utils.data.distributed.DistributedSampler(train_data)
+        elif self.cfg.enable_weighted_sampler:
+            train_sampler = torch.utils.data.WeightedRandomSampler(weighted_sampler, num_samples=len(train_data), replacement=True)
         else:
             train_sampler = None
 

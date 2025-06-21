@@ -19,6 +19,7 @@ amp_dtype = "float16"
 empty_cache = False
 empty_cache_freq = 100
 empty_cache_per_epoch = True
+enable_weighted_sampler = False
 find_unused_parameters = False
 
 mix_prob = 0
