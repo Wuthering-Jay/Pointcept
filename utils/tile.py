@@ -702,15 +702,15 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path="/mnt/e/data/云南遥感中心/train"
-    output_dir="/mnt/e/data/云南遥感中心/npy/train"
-    window_size=(100., 100.)
+    input_path=r"E:\data\Dales\dales_las\test"
+    output_dir=r"E:\data\Dales\dales_las\npy\test"
+    window_size=(50., 50.)
     min_points=4096*2
-    max_points=65536
-    # ignore_labels=[0,7,10,19]
-    # require_labels=None
-    ignore_labels=None
-    require_labels=[2,5,6,9,11,13,15]
+    max_points=4096*16*2
+    ignore_labels=[0]
+    require_labels=None
+    # ignore_labels=None
+    # require_labels=[2,5,6,9,11,13,15]
     label_remap=True
     label_count=True
     save_sample_weight=True 

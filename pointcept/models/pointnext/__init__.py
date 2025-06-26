@@ -1,0 +1,1 @@
+from .pointnext_v1m1 import *

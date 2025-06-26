@@ -36,7 +36,7 @@ class PointBatchNorm(nn.Module):
 class LocalAggregation(nn.Module):
     
     def __init__(self, in_channels, out_channels, k_neighbors=16):
-        super.__init__()
+        super().__init__()
         self.k_neighbors=k_neighbors
         mid_channels = max(in_channels, out_channels // 2)
         mlp_in_channels = in_channels
@@ -226,6 +226,7 @@ class Bottleneck(nn.Module):
         return [p, x, o] # (n, 3), (n, c), (b)
 
 
+@MODELS.register_module("PNext-v1m1")
 class PointNext(nn.Module):
     """
     Point Transformer for Semantic Segmentation (Dynamic Version)
@@ -245,7 +246,8 @@ class PointNext(nn.Module):
     """
     def __init__(self,
                  block=Bottleneck,
-                 blocks=[1, 1, 1, 1, 1],
+                 enc_blocks=[1, 1, 1, 1, 1],
+                 dec_blocks=[1, 1, 1, 1, 1],
                  planes=[32, 64, 128, 256, 512],
                  stride=[1, 4, 4, 4, 4],
                  nsample=[8, 16, 16, 16, 16],
@@ -253,10 +255,10 @@ class PointNext(nn.Module):
                  num_classes=13):
         super().__init__()
         self.in_channels = in_channels
-        self.num_layers = len(blocks)
+        self.num_layers = len(enc_blocks)
 
         # Ensure all configuration lists have the same length
-        assert self.num_layers == len(planes) == len(stride) == len(nsample), \
+        assert self.num_layers == len(dec_blocks) == len(planes) == len(stride) == len(nsample), \
             "The length of blocks, planes, stride, and nsample must be the same."
 
         # Encoder
@@ -267,7 +269,7 @@ class PointNext(nn.Module):
                 self._make_enc(
                     block,
                     planes[i],
-                    blocks[i],
+                    enc_blocks[i],
                     stride=stride[i],
                     nsample=nsample[i],
                 )
@@ -282,7 +284,7 @@ class PointNext(nn.Module):
                 self._make_dec(
                     block,
                     planes[i],
-                    blocks=1,  # Typically 1 block in decoder stages
+                    dec_blocks[i], # Typically 1 block in decoder stages
                     nsample=nsample[i],
                     is_head=is_head,
                 )
@@ -351,161 +353,3 @@ class PointNext(nn.Module):
 
         out = self.cls(x_prev)
         return out
-
-class PointTransformerSeg(nn.Module):
-    """
-    Point Transformer for Semantic Segmentation
-    Args:
-        block: block type, 默认为Bottleneck
-        blocks: block的数量
-        in_channels: 输入特征维度
-        num_classes: 输出类别数
-    """
-    def __init__(self,
-                 block=Bottleneck,
-                 blocks=[1, 1, 1, 1, 1],
-                 planes=[32, 64, 128, 256, 512],
-                 stride=[1, 4, 4, 4, 4],
-                 nsample=[8, 16, 16, 16, 16],
-                 in_channels=6,
-                 num_classes=13):
-        super().__init__()
-        self.in_channels = in_channels
-        self.in_planes = in_channels
-        self.enc1 = self._make_enc(
-            block,
-            planes[0],
-            blocks[0],
-            stride=stride[0],
-            nsample=nsample[0],
-        )  # N/1
-        self.enc2 = self._make_enc(
-            block,
-            planes[1],
-            blocks[1],
-            stride=stride[1],
-            nsample=nsample[1],
-        )  # N/4
-        self.enc3 = self._make_enc(
-            block,
-            planes[2],
-            blocks[2],
-            stride=stride[2],
-            nsample=nsample[2],
-        )  # N/16
-        self.enc4 = self._make_enc(
-            block,
-            planes[3],
-            blocks[3],
-            stride=stride[3],
-            nsample=nsample[3],
-        )  # N/64
-        self.enc5 = self._make_enc(
-            block,
-            planes[4],
-            blocks[4],
-            stride=stride[4],
-            nsample=nsample[4],
-        )  # N/256
-        self.dec5 = self._make_dec(
-            block, planes[4], 1, nsample=nsample[4], is_head=True
-        )  # transform p5
-        self.dec4 = self._make_dec(
-            block, planes[3], 1, nsample=nsample[3]
-        )  # fusion p5 and p4
-        self.dec3 = self._make_dec(
-            block, planes[2], 1, nsample=nsample[2]
-        )  # fusion p4 and p3
-        self.dec2 = self._make_dec(
-            block, planes[1], 1, nsample=nsample[1]
-        )  # fusion p3 and p2
-        self.dec1 = self._make_dec(
-            block, planes[0], 1, nsample=nsample[0]
-        )  # fusion p2 and p1
-        self.cls = nn.Sequential(
-            nn.Linear(planes[0], planes[0]),
-            nn.BatchNorm1d(planes[0]),
-            nn.ReLU(inplace=True),
-            nn.Linear(planes[0], num_classes),
-        )
-
-    def _make_enc(self, block, planes, blocks, stride=1, nsample=16):
-        """
-        Args:
-            block: block type, 默认为Bottleneck
-            planes: 输出特征维度
-            blocks: block的数量
-            stride: 降采样率
-            nsample: 每个点采样的点数
-        """
-        layers = [
-            TransitionDown(self.in_planes, planes * block.expansion, stride, nsample)
-        ]
-        self.in_planes = planes * block.expansion
-        for _ in range(blocks):
-            layers.append(
-                block(self.in_planes, self.in_planes, nsample=nsample)
-            )
-        return nn.Sequential(*layers)
-
-    def _make_dec(
-        self, block, planes, blocks, nsample=16, is_head=False
-    ):
-        """
-        Args:
-            block: block type, 默认为Bottleneck
-            planes: 输出特征维度
-            blocks: block的数量
-            nsample: 每个点采样的点数
-            is_head: 是否为head
-        """
-        layers = [
-            TransitionUp(self.in_planes, None if is_head else planes * block.expansion)
-        ]
-        self.in_planes = planes * block.expansion
-        for _ in range(blocks):
-            layers.append(
-                block(self.in_planes, self.in_planes, nsample=nsample)
-            )
-        return nn.Sequential(*layers)
-
-    def forward(self, data_dict):
-        p0 = data_dict["coord"]
-        x0 = data_dict["feat"]
-        o0 = data_dict["offset"].int()
-        p1, x1, o1 = self.enc1([p0, x0, o0])
-        p2, x2, o2 = self.enc2([p1, x1, o1]) 
-        p3, x3, o3 = self.enc3([p2, x2, o2])
-        p4, x4, o4 = self.enc4([p3, x3, o3])
-        p5, x5, o5 = self.enc5([p4, x4, o4])
-        x5 = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
-        x4 = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5, o5]), o4])[1]
-        x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
-        x2 = self.dec2[1:]([p2, self.dec2[0]([p2, x2, o2], [p3, x3, o3]), o2])[1]
-        x1 = self.dec1[1:]([p1, self.dec1[0]([p1, x1, o1], [p2, x2, o2]), o1])[1]
-        x = self.cls(x1)
-        return x
-
-
-@MODELS.register_module("PointTransformer-Seg26")
-class PointTransformerSeg26(PointTransformerSeg):
-    def __init__(self, **kwargs):
-        super(PointTransformerSeg26, self).__init__(
-            Bottleneck, [1, 1, 1, 1, 1], **kwargs
-        )
-
-
-@MODELS.register_module("PointTransformer-Seg38")
-class PointTransformerSeg38(PointTransformerSeg):
-    def __init__(self, **kwargs):
-        super(PointTransformerSeg38, self).__init__(
-            Bottleneck, [1, 2, 2, 2, 2], **kwargs
-        )
-
-
-@MODELS.register_module("PointTransformer-Seg50")
-class PointTransformerSeg50(PointTransformerSeg):
-    def __init__(self, **kwargs):
-        super(PointTransformerSeg50, self).__init__(
-            Bottleneck, [1, 2, 3, 5, 2], **kwargs
-        )
