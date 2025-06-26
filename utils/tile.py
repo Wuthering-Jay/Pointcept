@@ -166,7 +166,7 @@ class LASProcessor:
         
         for label, count in self.label_counts.items():
             frequency = count / total_points
-            self.weights[int(label)] = (1.0 / max(frequency, 1e-6)).astype(np.float32)
+            self.weights[int(label)] = (1.0 / max(frequency**(1/3), 1e-6))
 
         weight_sum = sum(self.weights.values())
         if weight_sum > 0:
