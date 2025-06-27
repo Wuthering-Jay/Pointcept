@@ -36,14 +36,14 @@ names = [
 model = dict(
     type="DefaultSegmentor",
     backbone=dict(
-        type="PNext-v1m1",
+        type="PNext-m1",
         in_channels=4,
         num_classes=num_classes,
         enc_blocks=[1, 1, 1, 1, 1],
         dec_blocks=[1, 1, 1, 1, 1],
         planes=[16, 32, 64, 128, 256],
         stride=[1, 4, 4, 4, 4],
-        nsample=[8, 16, 16, 16, 16],
+        nsample=[16, 32, 32, 32, 32],
     ),
     # fmt: off
     criteria=[

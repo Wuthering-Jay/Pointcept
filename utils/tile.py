@@ -702,11 +702,11 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\Dales\dales_las\test"
-    output_dir=r"E:\data\Dales\dales_las\npy\test"
+    input_path=r"E:\data\DALES\dales_las\test"
+    output_dir=r"E:\data\DALES\dales_las\npy\test"
     window_size=(50., 50.)
     min_points=4096*2
-    max_points=4096*16*2
+    max_points=4096*16
     ignore_labels=[0]
     require_labels=None
     # ignore_labels=None

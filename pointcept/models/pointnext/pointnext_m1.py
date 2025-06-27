@@ -226,7 +226,7 @@ class Bottleneck(nn.Module):
         return [p, x, o] # (n, 3), (n, c), (b)
 
 
-@MODELS.register_module("PNext-v1m1")
+@MODELS.register_module("PNext-m1")
 class PointNext(nn.Module):
     """
     Point Transformer for Semantic Segmentation (Dynamic Version)

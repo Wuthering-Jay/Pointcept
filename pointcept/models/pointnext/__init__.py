@@ -1,1 +1,1 @@
-from .pointnext_v1m1 import *
+from .pointnext_m1 import *
