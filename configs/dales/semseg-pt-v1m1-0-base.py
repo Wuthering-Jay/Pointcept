@@ -3,15 +3,15 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = True 
 evaluate = True
-batch_size = 16  # bs: total bs in all gpus
+batch_size = 12  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pnext-v1m1-0-base"
-weight = "exp/dales/semseg-pnext-v1m1-0-base/model/model_last.pth"
+save_path = "exp/dales/semseg-pt-v1m1-0-base"
+weight = "exp/dales/semseg-pt-v1m1-0-base/model/model_last.pth"
 num_classes = 8
 grid_size = 0.2
 
@@ -36,12 +36,13 @@ names = [
 model = dict(
     type="DefaultSegmentor",
     backbone=dict(
-        type="PNext-m1",
+        type="PT-v1m1",
         in_channels=4,
         num_classes=num_classes,
         enc_blocks=[1, 1, 1, 1, 1],
         dec_blocks=[1, 1, 1, 1, 1],
         planes=[16, 32, 64, 128, 256],
+        share_planes=8,
         stride=[1, 4, 4, 4, 4],
         nsample=[16, 32, 32, 32, 32],
     ),

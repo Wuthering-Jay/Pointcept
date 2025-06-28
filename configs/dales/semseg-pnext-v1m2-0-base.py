@@ -3,21 +3,21 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = True 
 evaluate = True
-batch_size = 8  # bs: total bs in all gpus
+batch_size = 16  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pnext-v1m2-0-base"
-weight = "exp/dales/semseg-pnext-v1m2-0-base/model/model_last.pth"
+save_path = "exp/dales/semseg-pnext-v1m2-1-base"
+weight = "exp/dales/semseg-pnext-v1m2-1-base/model/model_last.pth"
 num_classes = 8
 grid_size = 0.2
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root = r"E:\data\DALES\dales_las\npy"
+data_root = r"D:\data\dales_las\npy"
 
 ignore_index = -1
 names = [
@@ -79,8 +79,8 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 50
-eval_epoch = 10
+epoch = 100
+eval_epoch = 20
 optimizer = dict(type="AdamW", lr=1e-3, weight_decay=1e-4)
 
 
