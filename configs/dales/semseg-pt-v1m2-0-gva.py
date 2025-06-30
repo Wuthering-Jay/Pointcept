@@ -3,7 +3,7 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = True 
 evaluate = True
-batch_size = 8  # bs: total bs in all gpus
+batch_size = 4  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 50
@@ -43,7 +43,7 @@ model = dict(
         patch_embed_channels=24,
         patch_embed_groups=6,
         patch_embed_neighbours=24,
-        enc_depths=(1, 1, 2, 2),
+        enc_depths=(1, 1, 1, 1),
         enc_channels=(48, 96, 192, 256),
         enc_groups=(6, 12, 24, 32),
         enc_neighbours=(32, 32, 32, 32),

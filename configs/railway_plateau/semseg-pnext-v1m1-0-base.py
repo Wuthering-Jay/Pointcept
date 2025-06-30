@@ -17,7 +17,7 @@ grid_size = 0.05
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root = r"D:\WHU-Railway3D-las\plateau_railway\npy"
+data_root = "/mnt/d/WHU-Railway3D-las/plateau_railway/npy"
 
 ignore_index = -1
 names = [
