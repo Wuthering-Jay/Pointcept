@@ -31,7 +31,7 @@ def index_operator(data_dict, index, duplicate=False):
             "echo_ratio",
             "color",
             "normal",
-            "strength",
+            "intensity",
             "segment",
             "instance",
         ]

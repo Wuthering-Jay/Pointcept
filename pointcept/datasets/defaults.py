@@ -31,7 +31,7 @@ class DefaultDataset(Dataset):
         "echo_ratio", # 回波穿透比
         "color", # 颜色
         "normal", # 法线
-        "strength", # 强度
+        "intensity", # 强度
         "segment", # 语义分割
         "instance", # 实例分割
         "pose", # 位姿

@@ -552,7 +552,7 @@ class LASProcessor:
                 new_las.crs = las_data.crs
                 
             # Save to file
-            output_path = self.output_dir / f"{base_name}_segment_{i:03d}.las"
+            output_path = self.output_dir / f"{base_name}_segment_{i:04d}.las"
             new_las.write(output_path)
 
     def save_segments_as_npy(self, las_file: Path, las_data: laspy.LasData, segments: List[np.ndarray]):
@@ -569,8 +569,8 @@ class LASProcessor:
         print(f"Saving {len(segments)} segments as NPY files...")
         for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving NPY segments", unit="folder",position=0):
             # Create segment folder
-            segment_name = f"{base_name}_segment_{i:03d}"
-            segment_folder = self.output_dir / f"{base_name}_segment_{i:03d}"
+            segment_name = f"{base_name}_segment_{i:04d}"
+            segment_folder = self.output_dir / f"{base_name}_segment_{i:04d}"
             segment_folder.mkdir(exist_ok=True)
             
             if self.save_sample_weight:
@@ -650,7 +650,7 @@ class LASProcessor:
             # Save intensity if requested
             if self.save_intensity:
                 if hasattr(las_data, 'intensity'):
-                    intensity = las_data.intensity[segment_indices]
+                    intensity = las_data.intensity[segment_indices]/255
                 else:
                     # User requested intensity but it's not available - save zeros
                     intensity = np.zeros(len(segment_indices), dtype=np.uint16)
@@ -702,12 +702,12 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\DALES\dales_las\test"
-    output_dir=r"E:\data\DALES\dales_las\npy\test"
-    window_size=(50., 50.)
-    min_points=4096*2
-    max_points=4096*16
-    ignore_labels=[0]
+    input_path=r"D:\WHU-Railway3D-las\plateau_railway\test"
+    output_dir=r"D:\WHU-Railway3D-las\plateau_railway\npy\test"
+    window_size=(10., 10.)
+    min_points=4096*4
+    max_points=None
+    ignore_labels=None
     require_labels=None
     # ignore_labels=None
     # require_labels=[2,5,6,9,11,13,15]
@@ -715,9 +715,9 @@ if __name__ == "__main__":
     label_count=True
     save_sample_weight=True 
     output_format="npy"
-    save_echo_ratio=True
+    save_echo_ratio=False
     save_color=False
-    save_intensity=False
+    save_intensity=True
     save_normal=False
     save_index=False
     test_mode=False

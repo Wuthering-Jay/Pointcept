@@ -3,32 +3,32 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = True 
 evaluate = True
-batch_size = 8  # bs: total bs in all gpus
+batch_size = 6  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pnext-v1m1-0-base"
-weight = "exp/dales/semseg-pnext-v1m1-0-base/model/model_last.pth"
+save_path = "exp/railway_plateau/semseg-pnext-v1m1-0-base"
+weight = "exp/railway_plateau/semseg-pnext-v1m1-0-base/model/model_last.pth"
 num_classes = 8
-grid_size = 0.2
+grid_size = 0.05
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root = r"E:\data\DALES\dales_las\npy"
+data_root = r"D:\WHU-Railway3D-las\plateau_railway\npy"
 
 ignore_index = -1
 names = [
-    "ground",
-    "vegetation",
-    "cars",
-    "trucks",
-    "power lines",
+    "rail",
+    "track bed",
+    "lines",
     "fences",
     "poles",
     "buildings",
+    "ground",
+    "others",
 ]
 
 
@@ -49,14 +49,14 @@ model = dict(
     criteria=[
         dict(type="CrossEntropyLoss",
              weight=[
-0.029863364538482734,
-0.03398225904062671,
-0.12243503810237331,
-0.18499369495513007,
-0.18097568901650252,
-0.14633794302484154,
-0.2577365862459248,
-0.04367542507611825
+0.03920678546814069,
+0.024261880216581024,
+0.2337494840831869,
+0.07944271990683648,
+0.25958049626666896,
+0.14305886634749432,
+0.016501570435559786,
+0.20419819727553176
                  ],
              loss_weight=1.0,
              ignore_index=-1),
@@ -113,8 +113,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment", "intensity"),
+                feat_keys=("coord", "intensity"),
             ),
         ],
         test_mode=False,
@@ -151,8 +151,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment", "intensity"),
+                feat_keys=("coord", "intensity"),
             ),
         ],
         test_mode=False,
@@ -182,8 +182,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "index", "echo_ratio"),
-                    feat_keys=("coord", "echo_ratio"),
+                    keys=("coord", "index", "intensity"),
+                    feat_keys=("coord", "intensity"),
                 ),
             ],
             aug_transform=[
