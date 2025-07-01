@@ -650,10 +650,10 @@ class LASProcessor:
             # Save intensity if requested
             if self.save_intensity:
                 if hasattr(las_data, 'intensity'):
-                    intensity = las_data.intensity[segment_indices]/255
+                    intensity = las_data.intensity[segment_indices].astype(np.float32)/255.0
                 else:
                     # User requested intensity but it's not available - save zeros
-                    intensity = np.zeros(len(segment_indices), dtype=np.uint16)
+                    intensity = np.zeros(len(segment_indices), dtype=np.float32)
                 
                 np.save(segment_folder / "intensity.npy", intensity)
             
@@ -702,11 +702,11 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"D:\WHU-Railway3D-las\plateau_railway\test"
-    output_dir=r"D:\WHU-Railway3D-las\plateau_railway\npy\test"
+    input_path=r"E:\data\WHU-Railway3D-las\urban_railway\test"
+    output_dir=r"E:\data\WHU-Railway3D-las\urban_railway\npy\test"
     window_size=(10., 10.)
-    min_points=4096*4
-    max_points=None
+    min_points=4096*2
+    max_points=4096*8
     ignore_labels=None
     require_labels=None
     # ignore_labels=None

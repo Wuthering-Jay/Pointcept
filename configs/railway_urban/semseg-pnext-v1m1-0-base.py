@@ -1,31 +1,34 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-resume = True 
+resume = True
 evaluate = True
-batch_size = 8 # bs: total bs in all gpus
+batch_size = 16 # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/railway_plateau/semseg-pnext-v1m1-0-base"
-weight = "exp/railway_plateau/semseg-pnext-v1m1-0-base/model/model_last.pth"
+save_path = "exp/railway_urban/semseg-pnext-v1m1-0-base"
+weight = "exp/railway_urban/semseg-pnext-v1m1-0-base/model/model_last.pth"
 num_classes = 11
 grid_size = 0.05
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root = r"E:\data\WHU-Railway3D-las\plateau_railway\npy"
+data_root = r"E:\data\WHU-Railway3D-las\urban_railway\npy"
 
 ignore_index = -1
 names = [
     "rail",
     "track bed",
+    "masts",
+    "support devices",
     "lines",
     "fences",
     "poles",
+    "vegetation",
     "buildings",
     "ground",
     "others",
@@ -49,14 +52,17 @@ model = dict(
     criteria=[
         dict(type="CrossEntropyLoss",
              weight=[
-0.03920678546814069,
-0.024261880216581024,
-0.2337494840831869,
-0.07944271990683648,
-0.25958049626666896,
-0.14305886634749432,
-0.016501570435559786,
-0.20419819727553176
+0.06177797660858372,
+0.043614583007006415,
+0.13840665645896036,
+0.22340971398511572,
+0.12946444856907324,
+0.06114229414853919,
+0.16141948530014233,
+0.0325348112064113,
+0.0677429893759037,
+0.028641881840061452,
+0.05184515950020252
                  ],
              loss_weight=1.0,
              ignore_index=-1),

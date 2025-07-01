@@ -98,10 +98,10 @@ def batch_rotate_las_in_folder(input_folder: str, output_folder: str):
 if __name__ == '__main__':
     # --- 配置区域 ---
     # 请将这里替换为您的输入文件夹路径
-    INPUT_FOLDER_PATH = r'E:\data\WHU-Railway3D-las\plateau_railway\test'
+    INPUT_FOLDER_PATH = r'E:\data\WHU-Railway3D-las\urban_railway\test'
     
     # 请将这里替换为您希望保存结果的输出文件夹路径
-    OUTPUT_FOLDER_PATH = r'E:\data\WHU-Railway3D-las\plateau_railway\test_rotated'
+    OUTPUT_FOLDER_PATH = r'E:\data\WHU-Railway3D-las\urban_railway\test_rotated'
 
     # --- 执行批量处理 ---
     batch_rotate_las_in_folder(INPUT_FOLDER_PATH, OUTPUT_FOLDER_PATH)

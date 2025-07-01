@@ -136,6 +136,9 @@ class DefaultDataset(Dataset):
         if "normal" in data_dict.keys():
             data_dict["normal"] = data_dict["normal"].astype(np.float32)
             
+        if "intensity" in data_dict.keys():
+            data_dict["intensity"] = data_dict["intensity"].astype(np.float32)
+            
         # segment、instance 为 int32，若不存在用-1填充
         if "segment" in data_dict.keys():
             data_dict["segment"] = data_dict["segment"].reshape([-1]).astype(np.int32)
