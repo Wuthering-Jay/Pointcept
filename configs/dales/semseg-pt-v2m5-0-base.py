@@ -10,14 +10,14 @@ empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pt-v2m5-1-base"
-weight = "exp/dales/semseg-pt-v2m5-1-base/model/model_last.pth"
+save_path = "exp/dales/semseg-pt-v2m5-0-base"
+weight = "exp/dales/semseg-pt-v2m5-0-base/model/model_last.pth"
 num_classes = 8
 grid_size = 0.2
 
 # dataset settings
-dataset_type = "PointCloudDataset"
-data_root = r"D:\data\dales_las\npy"
+dataset_type = "LasDataset"
+data_root = r"E:\data\dales_las\tiles"
 
 ignore_index = -1
 names = [

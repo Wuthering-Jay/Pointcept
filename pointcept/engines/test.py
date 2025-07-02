@@ -76,7 +76,7 @@ class TesterBase:
                     if comm.get_world_size() > 1:
                         key = "module." + key  # xxx.xxx -> module.xxx.xxx
                 weight[key] = value
-            model.load_state_dict(weight, strict=True)
+            model.load_state_dict(weight, strict=False)
             self.logger.info(
                 "=> Loaded weight '{}' (epoch {})".format(
                     self.cfg.weight, checkpoint["epoch"]
@@ -166,7 +166,6 @@ class SemSegTester(TesterBase):
             data_name = data_dict.pop("name")
             print(f"Rank {comm.get_rank()}, Data {data_name}")
             # pred_save_path = os.path.join(save_path, "{}_pred.npy".format(data_name))
-            pred_save_path=os.path.join(self.cfg.data_root,self.cfg.data.test.split,str(data_name),"pred.npy")
             # if os.path.isfile(pred_save_path):
             #     logger.info(
             #         "{}/{}: {}, loaded pred and label.".format(
@@ -215,7 +214,43 @@ class SemSegTester(TesterBase):
                 assert "inverse" in data_dict.keys()
                 pred = pred[data_dict["inverse"]]
                 segment = data_dict["origin_segment"]
-            np.save(pred_save_path, pred)
+                
+             # Save prediction based on dataset type
+            if hasattr(self.cfg, "dataset_type") and self.cfg.dataset_type == "LasDataset":
+                try:
+                    import laspy
+                    # Construct path to original LAS file
+                    las_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, f"{data_name}.las")
+                    if not os.path.exists(las_path):
+                        las_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, f"{data_name}.laz")
+                    
+                    if os.path.exists(las_path):
+                        # Read the original LAS file
+                        las = laspy.read(las_path)
+                        
+                        # Update the classification field with predictions
+                        las.classification = pred.astype(np.uint8)
+                        
+                        # Save the updated LAS file
+                        pred_save_path = las_path
+                        las.write(pred_save_path)
+                        logger.info(f"Saved prediction to LAS file: {pred_save_path}")
+                    else:
+                        logger.warning(f"Could not find original LAS file for {data_name}, saving as NPY instead")
+                        pred_save_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, str(data_name), "pred.npy")
+                        np.save(pred_save_path, pred)
+                except ImportError:
+                    logger.warning("laspy not installed. Saving prediction as NPY.")
+                    pred_save_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, str(data_name), "pred.npy")
+                    np.save(pred_save_path, pred)
+                except Exception as e:
+                    logger.error(f"Error saving LAS file: {str(e)}")
+                    pred_save_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, str(data_name), "pred.npy")
+                    np.save(pred_save_path, pred)
+            else:
+                # Default behavior - save as NPY
+                pred_save_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, str(data_name), "pred.npy")
+                np.save(pred_save_path, pred)
             # if (
             #     self.cfg.data.test.type == "ScanNetDataset"
             #     or self.cfg.data.test.type == "ScanNet200Dataset"

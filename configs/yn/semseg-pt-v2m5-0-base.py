@@ -1,23 +1,23 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-resume = True 
+resume = False
 evaluate = True
-batch_size = 4  # bs: total bs in all gpus
+batch_size = 48  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 20
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/yn/semseg-pt-v2m5-0-base"
-weight = "exp/yn/semseg-pt-v2m5-0-base/model/model_last.pth"
+save_path = "exp/yn/semseg-pt-v2m5-1-base"
+# weight = "exp/yn/semseg-pt-v2m5-1-base/model/model_last.pth"
 num_classes = 7
-grid_size = 0.5
+grid_size = 2
 
 # dataset settings
 dataset_type = "PointCloudDataset"
-data_root = "/mnt/e/data/云南遥感中心/npy"
+data_root = r"E:\data\云南遥感中心数据\npy"
 
 ignore_index = -1
 names = [
@@ -36,7 +36,7 @@ model = dict(
     type="DefaultSegmentor",
     backbone=dict(
         type="PT-v2m5",
-        in_channels=4,
+        in_channels=3,
         num_classes=num_classes,
         patch_embed_depth=1,
         patch_embed_channels=24,
@@ -131,8 +131,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment"),
+                feat_keys=("coord",),
             ),
         ],
         test_mode=False,
@@ -169,8 +169,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment"),
+                feat_keys=("coord",),
             ),
         ],
         test_mode=False,
@@ -200,8 +200,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "index", "echo_ratio"),
-                    feat_keys=("coord", "echo_ratio"),
+                    keys=("coord", "index"),
+                    feat_keys=("coord",),
                 ),
             ],
             aug_transform=[

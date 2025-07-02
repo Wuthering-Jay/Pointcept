@@ -16,8 +16,8 @@ num_classes = 8
 grid_size = 0.2
 
 # dataset settings
-dataset_type = "PointCloudDataset"
-data_root = r"D:\data\dales_las\npy"
+dataset_type = "LasDataset"
+data_root = r"E:\data\dales_las\tiles"
 
 ignore_index = -1
 names = [

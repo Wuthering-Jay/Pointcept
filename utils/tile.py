@@ -166,7 +166,7 @@ class LASProcessor:
         
         for label, count in self.label_counts.items():
             frequency = count / total_points
-            self.weights[int(label)] = (1.0 / max(frequency**(1/3), 1e-6))
+            self.weights[int(label)] = (1.0 / max(frequency**(1/2), 1e-6))
 
         weight_sum = sum(self.weights.values())
         if weight_sum > 0:
@@ -500,6 +500,18 @@ class LASProcessor:
         
         print(f"Saving {len(segments)} segments as LAS files...")
         for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving LAS segments", unit="file",position=0):
+            # Calculate sample weight for this segment if enabled
+            if self.save_sample_weight:
+                segment_name = f"{base_name}_segment_{i:04d}"
+                current_sample_weight = 0.0
+                if hasattr(las_data, 'classification'):
+                    original_segment_labels = las_data.classification[segment_indices]
+                    unique_labels_in_segment = np.unique(original_segment_labels)
+                    current_sample_weight = sum(self.weights.get(label, 0.0) for label in unique_labels_in_segment)
+            
+            # Store the weight in the dictionary for later JSON saving
+            self.sample_weights[segment_name] = float(current_sample_weight)
+            
             # Create a copy of the header
             header = laspy.LasHeader(point_format=las_data.header.point_format, 
                                      version=las_data.header.version)
@@ -702,19 +714,19 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\WHU-Railway3D-las\urban_railway\test"
-    output_dir=r"E:\data\WHU-Railway3D-las\urban_railway\npy\test"
+    input_path=r"E:\data\railway"
+    output_dir=r"E:\data\railway\tiles\train"
     window_size=(10., 10.)
     min_points=4096*2
-    max_points=4096*8
-    ignore_labels=None
+    max_points=4096*16*4
+    ignore_labels=[]
     require_labels=None
     # ignore_labels=None
     # require_labels=[2,5,6,9,11,13,15]
     label_remap=True
     label_count=True
     save_sample_weight=True 
-    output_format="npy"
+    output_format="las"
     save_echo_ratio=False
     save_color=False
     save_intensity=True

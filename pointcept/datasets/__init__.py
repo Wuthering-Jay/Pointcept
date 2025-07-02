@@ -25,3 +25,4 @@ from .dataloader import MultiDatasetDataloader
 
 
 from .pointcloud import PointCloudDataset
+from .las_dataloader import LasDataset
