@@ -24,7 +24,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-    config_file = "configs/yn/semseg-pt-v2m5-0-base.py"
+    config_file = "configs/railway/semseg-pnext-v1m1-0-base.py"
     options = None
 
     cfg = default_config_parser(config_file, options)
