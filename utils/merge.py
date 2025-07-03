@@ -397,11 +397,11 @@ def merge_las_segments(input_path, output_dir=None, input_format="las",
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\dales_las\tiles\test"
-    output_dir=r"E:\data\dales_las\tiles\pred"
+    input_path=r"E:\data\railway\tiles\test"
+    output_dir=r"E:\data\railway\tiles\pred"
     input_format="las"
     label_file="pred"
-    label_remap_file=r"E:\data\dales_las\tiles\test\label_mapping.json"
+    label_remap_file=r"E:\data\railway\tiles\train\label_mapping.json"
     template_las_file=None
     
     merge_las_segments(
