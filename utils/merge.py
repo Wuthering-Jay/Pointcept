@@ -126,7 +126,23 @@ class LASMerger:
             first_segment = fh.read()
             header = laspy.LasHeader(point_format=first_segment.header.point_format,
                                      version=first_segment.header.version)
-        
+            
+            # Explicitly copy scale and offset from first segment to ensure consistency
+            header.x_scale = first_segment.header.x_scale
+            header.y_scale = first_segment.header.y_scale
+            header.z_scale = first_segment.header.z_scale
+            header.x_offset = first_segment.header.x_offset
+            header.y_offset = first_segment.header.y_offset
+            header.z_offset = first_segment.header.z_offset
+            
+            # Copy VLRs and CRS
+            if hasattr(first_segment.header, 'vlrs'):
+                for vlr in first_segment.header.vlrs:
+                    header.vlrs.append(vlr)
+                    
+            if hasattr(first_segment, 'crs'):
+                header.crs = first_segment.crs
+    
         # Count total points to allocate memory
         total_points = 0
         for segment_file in segment_files:
@@ -136,42 +152,54 @@ class LASMerger:
         print(f"  Total points: {total_points}")
         
         # Create merged LAS file
+        output_path = self.output_dir / f"{original_name}.las"
         merged_las = laspy.LasData(header)
         merged_las.points = laspy.ScaleAwarePointRecord.zeros(total_points, header=header)
         
-        # Merge segments
-        point_offset = 0
-        for segment_file in tqdm(segment_files, desc="  Reading segments", unit="segment"):
-            with laspy.open(segment_file) as fh:
-                segment = fh.read()
-                segment_points = len(segment)
-                
-                # Copy all dimensions
-                for dimension in segment.point_format.dimension_names:
-                    # Apply inverse label remapping if needed
-                    if dimension == 'classification' and self.inverse_label_map:
-                        original_labels = getattr(segment, dimension)
-                        # Use vectorized approach for remapping
-                        remapped = np.array([self.inverse_label_map.get(int(label), int(label)) 
-                                           for label in original_labels])
-                        merged_las.classification[point_offset:point_offset+segment_points] = remapped
-                    else:
-                        dim_data = getattr(segment, dimension)
-                        merged_data = getattr(merged_las, dimension)
-                        merged_data[point_offset:point_offset+segment_points] = dim_data
-                
-                point_offset += segment_points
+        # Prepare inverse label map as NumPy array for vectorized operations
+        remap_array = None
+        if self.inverse_label_map:
+            max_label = max(self.inverse_label_map.keys()) + 1
+            remap_array = np.ones(max_label, dtype=np.int32) * -1
+            for remapped_label, orig_label in self.inverse_label_map.items():
+                remap_array[remapped_label] = orig_label
         
-        # Copy VLRs and CRS
-        if hasattr(first_segment.header, 'vlrs'):
-            for vlr in first_segment.header.vlrs:
-                merged_las.header.vlrs.append(vlr)
-                
-        if hasattr(first_segment, 'crs'):
-            merged_las.crs = first_segment.crs
+        # Process segments in batches to conserve memory
+        BATCH_SIZE = 25  # Process this many segments before writing
+        
+        # Merge segments - process in small batches to avoid memory issues
+        point_offset = 0
+        for batch_start in range(0, len(segment_files), BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, len(segment_files))
+            batch_files = segment_files[batch_start:batch_end]
+            
+            print(f"  Processing batch {batch_start//BATCH_SIZE + 1}/{(len(segment_files)-1)//BATCH_SIZE + 1}")
+            
+            for segment_file in tqdm(batch_files, desc="  Processing segments", unit="segment"):
+                with laspy.open(segment_file) as fh:
+                    segment = fh.read()
+                    segment_points = len(segment)
+                    
+                    # Copy all dimensions
+                    for dimension in segment.point_format.dimension_names:
+                        # Apply inverse label remapping if needed
+                        if dimension == 'classification' and self.inverse_label_map and remap_array is not None:
+                            original_labels = getattr(segment, dimension)
+                            # Use vectorized remapping for speed
+                            mask = original_labels < len(remap_array)
+                            remapped = np.copy(original_labels)
+                            remapped[mask] = np.where(remap_array[original_labels[mask]] != -1, 
+                                                    remap_array[original_labels[mask]], 
+                                                    original_labels[mask])
+                            merged_las.classification[point_offset:point_offset+segment_points] = remapped
+                        else:
+                            dim_data = getattr(segment, dimension)
+                            merged_data = getattr(merged_las, dimension)
+                            merged_data[point_offset:point_offset+segment_points] = dim_data
+                    
+                    point_offset += segment_points
         
         # Save merged file
-        output_path = self.output_dir / f"{original_name}.las"
         merged_las.write(output_path)
         print(f"  Saved merged file to {output_path}")
     
@@ -397,11 +425,11 @@ def merge_las_segments(input_path, output_dir=None, input_format="las",
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\WHU-Railway3D-las\urban_railway\npy\test"
-    output_dir=r"E:\data\WHU-Railway3D-las\urban_railway\npy\pred"
-    input_format="npy"
+    input_path=r"F:\WHU-Railways3D\urban_railway\tiles\test1"
+    output_dir=r"F:\WHU-Railways3D\urban_railway\tiles\output"
+    input_format="las"
     label_file="pred"
-    label_remap_file=r"E:\data\WHU-Railway3D-las\urban_railway\npy\train\label_mapping.json"
+    label_remap_file=r"F:\WHU-Railways3D\urban_railway\tiles\train\label_mapping.json"
     template_las_file=None
     
     merge_las_segments(

@@ -1,142 +1,305 @@
+import os
 import laspy
 import numpy as np
-import time
-from pathlib import Path
+from tqdm import tqdm
+import gc  # For garbage collection
 
+# --- Configuration ---
+SOURCE_FOLDER = r"F:\WHU-Railways3D\rural_railway\tiles\output"
+TARGET_FOLDER = r"F:\WHU-Railways3D\rural_railway\test"
+OUTPUT_FOLDER = r"F:\WHU-Railways3D\rural_railway\result"
+PRECISION_FACTOR = 1000  # Match to millimeter precision
+CHUNK_SIZE = 5_000_000  # Process large files in chunks of this many points
 
-# -------------------------------------------------
-
-def process_las_pair(original_path, updated_path, output_path):
+def reorder_points_direct_matching(source_path, target_path, output_path):
     """
-    处理单个LAS文件对的核心函数。
-    此函数无需修改，因为它已能处理 .las 和 .laz 文件。
+    Memory-efficient point matching and reordering with chunking for large files.
     """
     try:
-        print(f"  - 步骤 1: 读取 '{original_path.name}' 的头文件以获取标准参数...")
-        with laspy.open(original_path) as f_orig:
-            if not f_orig.header.point_count > 0:
-                print(f"  - 警告: 原始文件 '{original_path.name}' 为空，已跳过。")
-                return
-            std_scale = f_orig.header.scales
-            std_offset = f_orig.header.offsets
-
-        print(f"  - 步骤 2: 读取更新文件 '{updated_path.name}' 并构建查找表...")
-        with laspy.open(updated_path) as f_upd:
-            if not f_upd.header.point_count > 0:
-                print(f"  - 警告: 更新文件 '{updated_path.name}' 为空，已跳过。")
-                return
-            updated_las = f_upd.read()
-            int_x = np.round((updated_las.x - std_offset[0]) / std_scale[0]).astype(np.int64)
-            int_y = np.round((updated_las.y - std_offset[1]) / std_scale[1]).astype(np.int64)
-            int_z = np.round((updated_las.z - std_offset[2]) / std_scale[2]).astype(np.int64)
-            classification_map = {
-                coord: classification
-                for coord, classification in zip(zip(int_x, int_y, int_z), updated_las.classification)
-            }
-
-        print(f"  - 步骤 3: 读取原始文件 '{original_path.name}' 并更新分类码...")
-        with laspy.open(original_path, mode='r') as original_file:
-            original_las = original_file.read()
-            orig_int_x = np.round((original_las.x - std_offset[0]) / std_scale[0]).astype(np.int64)
-            orig_int_y = np.round((original_las.y - std_offset[1]) / std_scale[1]).astype(np.int64)
-            orig_int_z = np.round((original_las.z - std_offset[2]) / std_scale[2]).astype(np.int64)
-
-            updated_count = 0
-            new_classifications = original_las.classification.copy()
-            for i in range(len(original_las.points)):
-                coord_key = (orig_int_x[i], orig_int_y[i], orig_int_z[i])
-                if coord_key in classification_map:
-                    new_classifications[i] = classification_map[coord_key]
-                    updated_count += 1
-            
-            original_las.classification = new_classifications
-            print(f"  - 更新统计: 在 {len(original_las.points)} 个点中，成功匹配并更新 {updated_count} 个。")
-
-        print(f"  - 步骤 4: 写入结果到 '{output_path.name}'...")
-        # laspy会根据输出文件名的后缀(.laz)自动进行压缩
-        with laspy.open(output_path, mode='w', header=original_las.header) as output_file:
-            output_file.write_points(original_las.points)
+        print(f"\n--- Processing file: {os.path.basename(source_path)} ---")
         
-        print(f"  - 成功: '{original_path.name}' 处理完成。")
+        # 1. Read source file and check if target file is too large
+        print("Reading source file...")
+        source_las = laspy.read(source_path)
+        num_points = len(source_las.points)
+        
+        # Check target file size before loading
+        target_info = laspy.open(target_path)
+        if target_info.header.point_count > CHUNK_SIZE:
+            print(f"Target file is large ({target_info.header.point_count:,} points). Using chunked processing.")
+            return process_large_file(source_path, target_path, output_path)
+        
+        # For smaller files, use the direct approach
+        print("Reading target file...")
+        target_las = laspy.read(target_path)
 
+        # Check point counts
+        if len(source_las.points) != len(target_las.points):
+            print(f"  [ERROR] Point count mismatch. Src: {len(source_las.points)}, Tgt: {len(target_las.points)}")
+            return False
+        
+        # 2. Check if headers have matching scale/offset for fast path
+        same_scale_offset = (
+            source_las.header.x_scale == target_las.header.x_scale and
+            source_las.header.y_scale == target_las.header.y_scale and
+            source_las.header.z_scale == target_las.header.z_scale and
+            source_las.header.x_offset == target_las.header.x_offset and
+            source_las.header.y_offset == target_las.header.y_offset and
+            source_las.header.z_offset == target_las.header.z_offset
+        )
+        
+        if same_scale_offset:
+            print("✓ Source and target share same scale and offset - using fast path")
+            # Direct integer coordinate comparison
+            source_points_raw = np.array([source_las.X, source_las.Y, source_las.Z]).T
+            target_points_raw = np.array([target_las.X, target_las.Y, target_las.Z]).T
+            
+            # Build lookup table with integer coordinates
+            target_dict = {}
+            for i in tqdm(range(len(target_points_raw)), desc="Building target map"):
+                key = tuple(target_points_raw[i])
+                if key not in target_dict:
+                    target_dict[key] = []
+                target_dict[key].append(i)
+            
+            # Match source points to target points
+            source_to_target_map = np.full(num_points, -1, dtype=np.int64)
+            matched_count = 0
+            
+            for i in tqdm(range(len(source_points_raw)), desc="Matching points"):
+                key = tuple(source_points_raw[i])
+                if key in target_dict and target_dict[key]:
+                    target_index = target_dict[key].pop(0)
+                    source_to_target_map[i] = target_index
+                    matched_count += 1
+        
+        else:
+            print("Different scale/offset values detected - using standard matching")
+            # Round coordinates to integers for stable dictionary keys
+            target_keys = np.round(target_las.xyz * PRECISION_FACTOR).astype(np.int64)
+            
+            # Build lookup table
+            target_dict = {}
+            for i in tqdm(range(len(target_keys)), desc="Building target map"):
+                key = tuple(target_keys[i])
+                if key not in target_dict:
+                    target_dict[key] = []
+                target_dict[key].append(i)
+            
+            # Match source points to target points
+            source_keys = np.round(source_las.xyz * PRECISION_FACTOR).astype(np.int64)
+            source_to_target_map = np.full(num_points, -1, dtype=np.int64)
+            matched_count = 0
+            
+            for i in tqdm(range(len(source_keys)), desc="Matching points"):
+                key = tuple(source_keys[i])
+                if key in target_dict and target_dict[key]:
+                    target_index = target_dict[key].pop(0)
+                    source_to_target_map[i] = target_index
+                    matched_count += 1
+        
+        # Report match statistics
+        match_percentage = (matched_count / num_points) * 100
+        print(f"Matched {matched_count:,} points ({match_percentage:.2f}%)")
+        
+        if matched_count == 0:
+            print("  [ERROR] No points were matched!")
+            return False
+            
+        # 3. Generate final reordering indices
+        new_order_indices = np.full(num_points, -1, dtype=np.int64)
+        for src_idx, tgt_idx in enumerate(source_to_target_map):
+            if tgt_idx != -1:
+                new_order_indices[tgt_idx] = src_idx
+        
+        # Filter out unmatched indices
+        valid_indices = new_order_indices[new_order_indices != -1]
+        
+        # 4. Save reordered point cloud
+        print("Creating and writing new LAS file...")
+        new_las = laspy.LasData(header=target_las.header)
+        new_las.points = source_las.points[valid_indices]
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        new_las.write(output_path)
+        print(f"Processing complete! File saved to: {output_path}")
+        
+        # Clean up
+        del source_las, target_las, target_dict, source_to_target_map, new_order_indices
+        gc.collect()
+        
+        return True
+        
     except Exception as e:
-        print(f"  - 错误: 处理 '{original_path.name}' 时发生严重错误: {e}")
-        print("  - 已跳过此文件对。")
+        print(f"Error processing file {os.path.basename(source_path)}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
+def process_large_file(source_path, target_path, output_path):
+    """
+    Process large files with compatibility for older laspy versions.
+    """
+    try:
+        print("Using chunked processing for large file...")
+        
+        # Read source file
+        source_las = laspy.read(source_path)
+        
+        # Get target file header information (without loading all points)
+        with laspy.open(target_path) as target_fh:
+            target_header = target_fh.header
+            target_point_count = target_header.point_count
+            
+            # Check point counts
+            if len(source_las.points) != target_point_count:
+                print(f"  [ERROR] Point count mismatch. Src: {len(source_las.points)}, Tgt: {target_point_count}")
+                return False
+                
+            # Check if headers have matching scale/offset
+            same_scale_offset = (
+                source_las.header.x_scale == target_header.x_scale and
+                source_las.header.y_scale == target_header.y_scale and
+                source_las.header.z_scale == target_header.z_scale and
+                source_las.header.x_offset == target_header.x_offset and
+                source_las.header.y_offset == target_header.y_offset and
+                source_las.header.z_offset == target_header.z_offset
+            )
+            
+            # For older laspy versions, we need to read the full file
+            print(f"Reading full target file ({target_point_count:,} points)...")
+            target_las = target_fh.read()
+            
+            # Process in memory-efficient manner
+            print("Building spatial lookup table...")
+            target_dict = {}
+            
+            # Process in batches to avoid memory issues
+            batch_size = min(CHUNK_SIZE, target_point_count)
+            num_batches = (target_point_count + batch_size - 1) // batch_size
+            
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, target_point_count)
+                print(f"Processing batch {batch_idx+1}/{num_batches} (points {start_idx:,} to {end_idx:,})...")
+                
+                if same_scale_offset:
+                    # Direct integer coordinate comparison
+                    batch_points_raw = np.array([
+                        target_las.X[start_idx:end_idx], 
+                        target_las.Y[start_idx:end_idx], 
+                        target_las.Z[start_idx:end_idx]
+                    ]).T
+                    
+                    for i, point in enumerate(tqdm(batch_points_raw, desc="Building target map")):
+                        key = tuple(point)
+                        if key not in target_dict:
+                            target_dict[key] = []
+                        target_dict[key].append(start_idx + i)
+                else:
+                    # Use rounded coordinates
+                    batch_xyz = target_las.xyz[start_idx:end_idx]
+                    batch_keys = np.round(batch_xyz * PRECISION_FACTOR).astype(np.int64)
+                    
+                    for i, point in enumerate(tqdm(batch_keys, desc="Building target map")):
+                        key = tuple(point)
+                        if key not in target_dict:
+                            target_dict[key] = []
+                        target_dict[key].append(start_idx + i)
+            
+            # Match source points to target
+            if same_scale_offset:
+                print("✓ Using fast path matching (same scale/offset)")
+                source_points_raw = np.array([source_las.X, source_las.Y, source_las.Z]).T
+                source_keys = source_points_raw
+            else:
+                print("Using standard matching (different scale/offset)")
+                source_keys = np.round(source_las.xyz * PRECISION_FACTOR).astype(np.int64)
+            
+            # Match points
+            source_to_target_map = np.full(len(source_las.points), -1, dtype=np.int64)
+            matched_count = 0
+            
+            for i in tqdm(range(len(source_keys)), desc="Matching points"):
+                key = tuple(source_keys[i])
+                if key in target_dict and target_dict[key]:
+                    target_index = target_dict[key].pop(0)
+                    source_to_target_map[i] = target_index
+                    matched_count += 1
+                    
+            # Report match statistics
+            match_percentage = (matched_count / len(source_las.points)) * 100
+            print(f"Matched {matched_count:,} points ({match_percentage:.2f}%)")
+            
+            if matched_count == 0:
+                print("  [ERROR] No points were matched!")
+                return False
+                
+            # Generate reordering indices
+            new_order_indices = np.full(len(source_las.points), -1, dtype=np.int64)
+            for src_idx, tgt_idx in enumerate(source_to_target_map):
+                if tgt_idx != -1:
+                    new_order_indices[tgt_idx] = src_idx
+            
+            # Filter out unmatched indices
+            valid_indices = new_order_indices[new_order_indices != -1]
+            
+            # Create new LAS file
+            print("Creating and writing new LAS file...")
+            new_las = laspy.LasData(header=target_header)
+            new_las.points = source_las.points[valid_indices]
+            
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            new_las.write(output_path)
+            print(f"Processing complete! File saved to: {output_path}")
+            
+            # Clean up
+            del target_las, source_las, target_dict, new_order_indices
+            gc.collect()
+            
+            return True
+            
+    except Exception as e:
+        print(f"Error processing large file {os.path.basename(source_path)}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
-    """
-    批量处理的主函数，现在支持忽略后缀进行文件名匹配。
-    """
-    print("--- 开始批量处理 (智能匹配模式) ---")
-    start_time = time.time()
-
-    original_p = Path(ORIGINAL_FOLDER)
-    updated_p = Path(UPDATED_FOLDER)
-    output_p = Path(OUTPUT_FOLDER)
-
-    if not original_p.is_dir() or not updated_p.is_dir():
-        print(f"错误: 请确保原始文件夹 '{ORIGINAL_FOLDER}' 和更新文件夹 '{UPDATED_FOLDER}' 都存在。")
-        return
-
-    print(f"输出文件夹将被创建于: '{output_p}'")
-    output_p.mkdir(parents=True, exist_ok=True)
-    
-    # 获取原始文件夹中所有 .las 和 .laz 文件
-    files_to_process = [p for p in original_p.iterdir() if p.suffix.lower() in ['.las', '.laz']]
-    
-    if not files_to_process:
-        print("在原始文件夹中没有找到任何 .las 或 .laz 文件。")
+    if not os.path.exists(SOURCE_FOLDER) or not os.path.exists(TARGET_FOLDER):
+        print("Error: Source or target folder does not exist.")
         return
         
-    print(f"在原始文件夹中找到 {len(files_to_process)} 个LAS/LAZ文件，开始匹配和处理...")
-    print("-" * 20)
-
-    total_files = len(files_to_process)
-    processed_count = 0
-    skipped_count = 0
-
-    for i, original_file_path in enumerate(files_to_process):
-        # 【新逻辑】获取不带后缀的主文件名 (e.g., "tile_001")
-        basename = original_file_path.stem
-        print(f"[{i+1}/{total_files}] 正在检查主文件名: '{basename}' (来自 '{original_file_path.name}')")
-
-        # 【新逻辑】在更新文件夹中查找匹配的主文件名，不限后缀
-        updated_file_path = None
-        potential_updated_las = updated_p / f"{basename}.las"
-        potential_updated_laz = updated_p / f"{basename}.laz"
-
-        if potential_updated_las.exists():
-            updated_file_path = potential_updated_las
-        elif potential_updated_laz.exists():
-            updated_file_path = potential_updated_laz
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    source_files = [f for f in os.listdir(SOURCE_FOLDER) if f.lower().endswith(('.las', '.laz'))]
+    
+    if not source_files:
+        print(f"No .las or .laz files found in source folder '{SOURCE_FOLDER}'.")
+        return
         
-        # 如果找到了匹配文件 (无论后缀是.las还是.laz)
-        if updated_file_path:
-            print(f"  - 找到匹配文件: '{updated_file_path.name}'")
-            # 【新逻辑】输出文件名和原始文件名保持一致
-            output_file_path = output_p / original_file_path.name
+    print(f"Found {len(source_files)} source files to process.")
+    
+    # Process files sequentially to avoid memory issues
+    success_count = 0
+    for filename in source_files:
+        source_file_path = os.path.join(SOURCE_FOLDER, filename)
+        target_file_path = os.path.join(TARGET_FOLDER, filename)
+        output_file_path = os.path.join(OUTPUT_FOLDER, filename)
+        
+        if os.path.exists(target_file_path):
+            print(f"\nProcessing {filename}...")
+            success = reorder_points_direct_matching(source_file_path, target_file_path, output_file_path)
+            if success:
+                success_count += 1
             
-            process_las_pair(original_file_path, updated_file_path, output_file_path)
-            processed_count += 1
+            # Force garbage collection to free memory
+            gc.collect()
         else:
-            print(f"  - 跳过: 在更新文件夹中找不到主文件名为 '{basename}' 的 .las 或 .laz 文件。")
-            skipped_count += 1
-        print("-" * 20)
-
-    end_time = time.time()
-    print("--- 批量处理完成 ---")
-    print(f"总计: {total_files} 个文件。")
-    print(f"成功处理: {processed_count} 个文件对。")
-    print(f"跳过: {skipped_count} 个文件（因缺少对应文件）。")
-    print(f"总耗时: {end_time - start_time:.2f} 秒。")
-
-
-if __name__ == '__main__':
+            print(f"\n[WARNING] Corresponding file '{filename}' not found in target folder, skipped.")
     
-    # --- 【1. 配置区】请修改为您自己的文件夹路径 ---
-    ORIGINAL_FOLDER = r'E:\data\WHU-Railway3D-las\urban_railway\test'
-    UPDATED_FOLDER = r'E:\data\WHU-Railway3D-las\urban_railway\npy\pred'
-    OUTPUT_FOLDER = r'E:\data\WHU-Railway3D-las\urban_railway\output'
+    print(f"\nProcessing complete: {success_count}/{len(source_files)} files processed successfully.")
 
+if __name__ == "__main__":
     main()
