@@ -29,6 +29,8 @@ def index_operator(data_dict, index, duplicate=False):
         data_dict["index_valid_keys"] = [
             "coord",
             "echo_ratio",
+            "is_first",
+            "is_last",
             "color",
             "normal",
             "intensity",

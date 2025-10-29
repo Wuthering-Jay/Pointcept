@@ -6,18 +6,18 @@ evaluate = True
 batch_size = 6  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
-empty_cache_freq = 50
+empty_cache_freq = 25
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pt-v2m5-0-base"
-weight = "exp/dales/semseg-pt-v2m5-0-base/model/model_last.pth"
+save_path = "exp/dales/semseg-pt-v2m5-1-base"
+weight = "exp/dales/semseg-pt-v2m5-1-base/model/model_last.pth"
 num_classes = 8
-grid_size = 0.2
+grid_size = 0.5
 
 # dataset settings
 dataset_type = "LasDataset"
-data_root = r"E:\data\dales_las\tiles"
+data_root = r"E:\data\DALES\dales_las\tile"
 
 ignore_index = -1
 names = [
@@ -37,7 +37,7 @@ model = dict(
     type="DefaultSegmentor",
     backbone=dict(
         type="PT-v2m5",
-        in_channels=4,
+        in_channels=5,
         num_classes=num_classes,
         patch_embed_depth=1,
         patch_embed_channels=24,
@@ -87,8 +87,8 @@ model = dict(
 )
 
 # scheduler settings
-epoch = 100
-eval_epoch = 20
+epoch = 50
+eval_epoch = 10
 optimizer = dict(type="AdamW", lr=1e-3, weight_decay=1e-4)
 
 
@@ -133,8 +133,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment", "is_first", "is_last",),
+                feat_keys=("coord", "is_first", "is_last",),
             ),
         ],
         test_mode=False,
@@ -171,8 +171,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "echo_ratio"),
-                feat_keys=("coord", "echo_ratio"),
+                keys=("coord", "segment", "is_first", "is_last",),
+                feat_keys=("coord", "is_first", "is_last",),
             ),
         ],
         test_mode=False,
@@ -202,8 +202,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "index", "echo_ratio"),
-                    feat_keys=("coord", "echo_ratio"),
+                    keys=("coord", "index", "is_first", "is_last",),
+                    feat_keys=("coord", "is_first", "is_last",),
                 ),
             ],
             aug_transform=[

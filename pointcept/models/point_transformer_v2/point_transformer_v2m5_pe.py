@@ -76,19 +76,12 @@ class PointNetLayer(nn.Module):
         )
         
     def forward(self, points):
-        """
-        前向传播
-        
-        参数:
-            x: 输入特征 [n, c1]
-            coord: 点坐标 [n, 3]
-            offset: 点云偏移量
-            
-        返回:
-            [n, c2] 输出特征
-        """
         coord, feat, offset = points
-        reference_index, _ = pointops.knn_query(self.k_neighbors, coord, offset)
+        
+        # KNN 查询不需要梯度
+        with torch.no_grad():
+            reference_index, _ = pointops.knn_query(self.k_neighbors, coord, offset)
+        
         grouped_features = pointops.grouping(reference_index, feat, coord, with_xyz=False)
         n_points = grouped_features.shape[0]
         grouped_features = grouped_features.reshape(-1, grouped_features.shape[-1])
@@ -170,12 +163,14 @@ class GroupedVectorAttention(nn.Module):
         output: feat: [n, c]
         """
         query, key, value = (
-            self.linear_q(feat), # [n, c]
-            self.linear_k(feat), # [n, c]
-            self.linear_v(feat), # [n, c]
+            self.linear_q(feat),
+            self.linear_k(feat),
+            self.linear_v(feat),
         )
-        key = pointops.grouping(reference_index, key, coord, with_xyz=True) # [n, k, 3+c]
-        value = pointops.grouping(reference_index, value, coord, with_xyz=False) # [n, k, c]
+        
+        # grouping 操作使用 detach 后的 reference_index
+        key = pointops.grouping(reference_index.detach(), key, coord, with_xyz=True)
+        value = pointops.grouping(reference_index.detach(), value, coord, with_xyz=False)
         pos, key = key[:, :, 0:3], key[:, :, 3:] # [n, k, 3], [n, k, c]
         relation_qk = key - query.unsqueeze(1) # [n, k ,c], 邻域内与中心点的相对位置, 用于相对位置编码
         if self.pe_multiplier: # 乘性因子
@@ -189,7 +184,10 @@ class GroupedVectorAttention(nn.Module):
         weight = self.weight_encoding(relation_qk) # [n, k, g]
         weight = self.attn_drop(self.softmax(weight)) # [n, k, g]
 
-        mask = torch.sign(reference_index + 1) # [n, k], 无效邻域点标记为0
+        # mask 操作不需要梯度
+        with torch.no_grad():
+            mask = torch.sign(reference_index + 1) # [n, k], 无效邻域点标记为0
+        
         weight = torch.einsum("n s g, n s -> n s g", weight, mask) # [n, k, g]
         value = einops.rearrange(value, "n ns (g i) -> n ns g i", g=self.groups) # [n, k, g, i]
         feat = torch.einsum("n s g i, n s g -> n g i", value, weight) # [n, g, i]
@@ -303,14 +301,10 @@ class BlockSequence(nn.Module):
             self.blocks.append(block)
 
     def forward(self, points):
-        """
-        input: points: [pxo], [[n,3],[n,c],[b]]
-        output: [pxo], [[n,3],[n,c],[b]]
-        """
         coord, feat, offset = points 
-        # reference index query of neighbourhood attention
-        # for windows attention, modify reference index query method
-        reference_index, _ = pointops.knn_query(self.neighbours, coord, offset) # [n, k]
+        with torch.no_grad():
+            reference_index, _ = pointops.knn_query(self.neighbours, coord, offset)
+        
         for block in self.blocks:
             points = block(points, reference_index)
         return points
@@ -345,28 +339,33 @@ class GridPool(nn.Module):
         coord, feat, offset = points # [n, 3] [n, c] [b]
         batch = offset2batch(offset) # [b] -> [n]
         feat = self.act(self.norm(self.fc(feat))) # [n, c]
-        start = (
-            segment_csr(
-                coord,
-                torch.cat([batch.new_zeros(1), torch.cumsum(batch.bincount(), dim=0)]),
-                reduce="min",
-            ) # [b, 3], 求每个batch的最小点
-            if start is None
-            else start
-        )
-        cluster = voxel_grid(
-            pos=coord - start[batch], size=self.grid_size, batch=batch, start=0
-        ) # [n], 计算每个点在网格中的索引
-        unique, cluster, counts = torch.unique(
-            cluster, sorted=True, return_inverse=True, return_counts=True
-        )
-        _, sorted_cluster_indices = torch.sort(cluster) # 格网化索引
-        idx_ptr = torch.cat([counts.new_zeros(1), torch.cumsum(counts, dim=0)]) # [v+1], 体素分段
-        coord = segment_csr(coord[sorted_cluster_indices], idx_ptr, reduce="mean") # [v, 3], 坐标平均池化
-        feat = segment_csr(feat[sorted_cluster_indices], idx_ptr, reduce="max") # [v, c], 特征最大池化
-        batch = batch[idx_ptr[:-1]] # [v]
-        offset = batch2offset(batch) # [v] -> [b]
-        return [coord, feat, offset], cluster
+        
+        # 这些操作不需要梯度
+        with torch.no_grad():
+            start = (
+                segment_csr(
+                    coord,
+                    torch.cat([batch.new_zeros(1), torch.cumsum(batch.bincount(), dim=0)]),
+                    reduce="min",
+                )
+                if start is None
+                else start
+            )
+            cluster = voxel_grid(
+                pos=coord - start[batch], size=self.grid_size, batch=batch, start=0
+            )
+            unique, cluster, counts = torch.unique(
+                cluster, sorted=True, return_inverse=True, return_counts=True
+            )
+            _, sorted_cluster_indices = torch.sort(cluster)
+            idx_ptr = torch.cat([counts.new_zeros(1), torch.cumsum(counts, dim=0)])
+        
+        # 使用 detach 后的索引
+        coord = segment_csr(coord[sorted_cluster_indices], idx_ptr, reduce="mean")
+        feat = segment_csr(feat[sorted_cluster_indices], idx_ptr, reduce="max")
+        batch = batch[idx_ptr[:-1]]
+        offset = batch2offset(batch)
+        return [coord, feat, offset], cluster.detach()  # cluster 不需要梯度
 
 
 class UnpoolWithSkip(nn.Module):

@@ -226,9 +226,13 @@ class Trainer(TrainerBase):
         if self.cfg.empty_cache_freq > 0:
             if self.comm_info["iter"] % self.cfg.empty_cache_freq == 0:
                 torch.cuda.empty_cache()
+                import gc
+                gc.collect()
         self.comm_info["model_output_dict"] = output_dict
 
     def after_epoch(self):
+        if self.cfg.empty_cache_per_epoch:
+            torch.cuda.empty_cache()
         for h in self.hooks:
             h.after_epoch()
         self.storage.reset_histories()

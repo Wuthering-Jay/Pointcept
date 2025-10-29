@@ -763,12 +763,12 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\WHU-Railway3D\test_set\plateau_railways\output"
-    output_dir=r"E:\data\WHU-Railway3D\test_set\plateau_railways\11"
-    window_size=(20., 20.)
+    input_path=r"E:\data\DALES\dales_las\train"
+    output_dir=r"E:\data\DALES\dales_las\tile\train"
+    window_size=(50., 50.)
     min_points=4096*2
     max_points=4096*16*2
-    ignore_labels=[]
+    ignore_labels=[0]
     require_labels=None
     # ignore_labels=None
     # require_labels=[2,5,6,9,11,13,15]

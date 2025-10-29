@@ -10,8 +10,9 @@ import multiprocessing
 
 class LASTileProcessor:
     """
-    专门针对LAS/LAZ点云文件的分块处理器。
-    包含标签重映射、权重计算、标签过滤等功能，但移除了NPY格式保存功能。
+    Specialized tile processor for LAS/LAZ point cloud files.
+    Includes label remapping, weight calculation, and label filtering functions, 
+    but removes NPY format saving functionality.
     """
     
     def __init__(self,
@@ -25,18 +26,18 @@ class LASTileProcessor:
                  save_sample_weight: bool = False,
                  require_labels: Optional[List[int]] = None):
         """
-        初始化LAS分块处理器。
+        Initialize LAS tile processor.
         
         Args:
-            input_path: LAS文件路径或包含LAS文件的目录
-            output_dir: 输出目录 (默认: 与输入文件同目录)
-            window_size: (x_size, y_size) 矩形窗口大小 (LAS文件单位)
-            min_points: 有效分块的最小点数阈值 (None表示跳过)
-            max_points: 分块进一步细分的最大点数阈值 (None表示跳过)
-            label_remap: 是否将标签重映射为连续值
-            label_count: 是否统计标签数量并计算权重
-            save_sample_weight: 是否保存样本权重
-            require_labels: 需要保留的标签列表，其他标签会被设为-1
+            input_path: LAS file path or directory containing LAS files
+            output_dir: Output directory (default: same as input file directory)
+            window_size: (x_size, y_size) rectangular window size (in LAS file units)
+            min_points: Minimum point threshold for valid tiles (None to skip)
+            max_points: Maximum point threshold for further subdivision (None to skip)
+            label_remap: Whether to remap labels to continuous values
+            label_count: Whether to count labels and calculate weights
+            save_sample_weight: Whether to save sample weights
+            require_labels: List of labels to keep, other labels will be set to invalid value (31 or 255)
         """
         self.input_path = Path(input_path)
         self.output_dir = Path(output_dir) if output_dir else self.input_path.parent
@@ -66,16 +67,16 @@ class LASTileProcessor:
         self.las_files = self._find_las_files()
     
     def _find_las_files(self) -> List[Path]:
-        """查找输入路径中的所有LAS文件。"""
+        """Find all LAS files in the input path."""
         if self.input_path.is_file() and self.input_path.suffix.lower() in ['.las', '.laz']:
             return [self.input_path]
         elif self.input_path.is_dir():
             return list(self.input_path.glob('*.las')) + list(self.input_path.glob('*.laz'))
         else:
-            raise ValueError(f"输入路径 {self.input_path} 不是有效的LAS文件或目录")
+            raise ValueError(f"Input path {self.input_path} is not a valid LAS file or directory")
     
     def process_all_files(self):
-        """处理所有发现的LAS文件。"""
+        """Process all discovered LAS files."""
         # 标签收集和权重计算
         if self.label_remap or self.label_count:
             self._collect_labels()
@@ -84,8 +85,8 @@ class LASTileProcessor:
             self._calculate_weights()
             
         # 处理文件
-        for las_file in tqdm(self.las_files, desc="处理文件", unit="文件"):
-            print(f"正在处理 {las_file}...")
+        for las_file in tqdm(self.las_files, desc="Processing files", unit="file"):
+            print(f"Processing {las_file}...")
             self.process_file(las_file)
             
         # 保存标签相关信息
@@ -99,7 +100,7 @@ class LASTileProcessor:
             self._save_sample_weights_json()
     
     def process_file(self, las_file: Union[str, Path]):
-        """处理单个LAS文件。"""
+        """Process a single LAS file."""
         las_file = Path(las_file)
         
         # 读取LAS文件
@@ -121,13 +122,13 @@ class LASTileProcessor:
     
     def segment_point_cloud(self, points: np.ndarray) -> List[np.ndarray]:
         """
-        将点云分割为矩形窗口并应用阈值。
+        Segment point cloud into rectangular windows and apply thresholds.
         
         Args:
-            points: Nx3的点坐标数组 (x, y, z)
+            points: Nx3 point coordinate array (x, y, z)
             
         Returns:
-            索引数组列表，每个表示一个分块中的点
+            List of index arrays, each representing points in a segment
         """
         # 获取边界框
         min_x, min_y = np.min(points[:, 0]), np.min(points[:, 1])
@@ -158,14 +159,14 @@ class LASTileProcessor:
     
     def apply_max_threshold(self, points: np.ndarray, segments: List[np.ndarray]) -> List[np.ndarray]:
         """
-        对超过max_points阈值的分块进行细分。
+        Subdivide segments that exceed max_points threshold.
         
         Args:
-            points: Nx3的点坐标数组
-            segments: 表示分块的索引数组列表
+            points: Nx3 point coordinate array
+            segments: List of index arrays representing segments
             
         Returns:
-            处理后满足最大阈值的分块
+            Processed segments meeting maximum threshold
         """
         # 快速识别需要细分的分块
         large_segment_indices = [i for i, segment in enumerate(segments) if len(segment) > self.max_points]
@@ -173,7 +174,7 @@ class LASTileProcessor:
         if not large_segment_indices:
             return segments
         
-        print(f"细分 {len(large_segment_indices)} 个超过 {self.max_points} 点的分块...")
+        print(f"Subdividing {len(large_segment_indices)} segments exceeding {self.max_points} points...")
         
         # 保留小分块，处理大分块
         result_segments = [segment for i, segment in enumerate(segments) if i not in large_segment_indices]
@@ -203,31 +204,31 @@ class LASTileProcessor:
         
         # 使用多线程处理大分块
         max_workers = max(1, min(multiprocessing.cpu_count(), len(large_segments)))
-        with tqdm(total=len(large_segments), desc="细分大分块", unit="分块") as pbar:
+        with tqdm(total=len(large_segments), desc="Subdividing large segments", unit="segment") as pbar:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(process_segment, segment) for segment in large_segments]
                 for future in as_completed(futures):
                     result_segments.extend(future.result())
                     pbar.update(1)
         
-        print(f"细分完成。处理后共 {len(result_segments)} 个分块。")
+        print(f"Subdivision complete. Total {len(result_segments)} segments after processing.")
         return result_segments
     
     def apply_min_threshold(self, points: np.ndarray, segments: List[np.ndarray]) -> List[np.ndarray]:
         """
-        合并小于min_points阈值的分块到最近的分块。
+        Merge segments smaller than min_points threshold to nearest segments.
         
         Args:
-            points: Nx3的点坐标数组
-            segments: 表示分块的索引数组列表
+            points: Nx3 point coordinate array
+            segments: List of index arrays representing segments
             
         Returns:
-            处理后满足最小阈值的分块
+            Processed segments meeting minimum threshold
         """
         if len(segments) <= 1:
             return segments
         
-        print(f"合并少于 {self.min_points} 点的分块...")
+        print(f"Merging segments with fewer than {self.min_points} points...")
         
         # 计算所有分块的质心
         centroids = np.array([np.mean(points[segment][:, :2], axis=0) for segment in segments])
@@ -241,7 +242,7 @@ class LASTileProcessor:
         # 按大小升序处理小分块（先合并最小的）
         small_segments.sort(key=lambda i: len(segments[i]))
         
-        with tqdm(total=len(small_segments), desc="合并小分块", unit="分块") as pbar:
+        with tqdm(total=len(small_segments), desc="Merging small segments", unit="segment") as pbar:
             for small_idx in small_segments:
                 if small_idx >= len(segments) or len(segments[small_idx]) == 0:
                     pbar.update(1)
@@ -270,18 +271,18 @@ class LASTileProcessor:
     
     def save_segments_as_las(self, las_file: Path, las_data: laspy.LasData, segments: List[np.ndarray]):
         """
-        将分块的点云保存为独立的LAS文件。
+        Save segmented point clouds as separate LAS files.
         
         Args:
-            las_file: 原始LAS文件路径
-            las_data: 原始LAS数据
-            segments: 分块的索引数组列表
+            las_file: Original LAS file path
+            las_data: Original LAS data
+            segments: List of index arrays for segments
         """
         base_name = las_file.stem
         
-        print(f"保存 {len(segments)} 个分块为LAS文件...")
-        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="保存LAS分块", unit="文件"):
-            # 创建header副本
+        print(f"Saving {len(segments)} segments as LAS files...")
+        for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving LAS segments", unit="file"):
+            # 创建header副本，使用兼容的LAS版本
             header = laspy.LasHeader(point_format=las_data.header.point_format, 
                                      version=las_data.header.version)
             
@@ -303,12 +304,14 @@ class LASTileProcessor:
             
             # 标签处理
             if hasattr(new_las, 'classification'):
-                # 应用require_labels逻辑：将非require_labels的点设为-1
+                # 应用require_labels逻辑：将非require_labels的点设为无效值
                 if self.require_labels:
                     require_mask = np.zeros(len(new_las.classification), dtype=bool)
                     for label in self.require_labels:
                         require_mask |= (new_las.classification == label)
-                    new_las.classification[~require_mask] = -1
+                    # 使用31作为无效值（LAS 1.2/1.3兼容）或255（LAS 1.4+）
+                    invalid_value = 255 if las_data.header.version >= (1, 4) else 31
+                    new_las.classification[~require_mask] = invalid_value
                 
                 # 应用标签重映射
                 if self.label_remap:
@@ -346,10 +349,10 @@ class LASTileProcessor:
     
     def _collect_labels(self):
         """收集所有文件的标签信息，用于重映射和计数。"""
-        print("收集所有文件的标签信息...")
+        print("Collecting labels from all files...")
         unique_labels = set()
 
-        for las_file in tqdm(self.las_files, desc="扫描文件", unit="文件"):
+        for las_file in tqdm(self.las_files, desc="Scanning files", unit="file"):
             with laspy.open(las_file) as fh:
                 las_data = fh.read()
                 
@@ -372,14 +375,16 @@ class LASTileProcessor:
                     unique_labels.update(valid_labels)
                     
                     if self.label_count:
-                        # 计算实际的标签分布（包括-1）
+                        # 计算实际的标签分布（包括无效标签）
                         modified_labels = las_data.classification.copy()
                         if self.require_labels:
-                            # 将非require_labels的点设为-1
+                            # 将非require_labels的点设为无效值
                             require_mask = np.zeros(len(modified_labels), dtype=bool)
                             for label in self.require_labels:
                                 require_mask |= (modified_labels == label)
-                            modified_labels[~require_mask] = -1
+                            # 使用31作为无效值（LAS 1.2/1.3兼容）或255（LAS 1.4+）
+                            invalid_value = 255 if las_data.header.version >= (1, 4) else 31
+                            modified_labels[~require_mask] = invalid_value
                         
                         unique_file_labels, counts = np.unique(modified_labels, return_counts=True)
                         file_counts = {int(label): int(count) for label, count in zip(unique_file_labels, counts)}
@@ -392,7 +397,7 @@ class LASTileProcessor:
         if self.label_remap:
             sorted_labels = sorted(unique_labels)
             self.label_map = {int(original): i for i, original in enumerate(sorted_labels)}
-            print(f"创建标签映射: {self.label_map}")
+            print(f"Created label mapping: {self.label_map}")
 
     def _calculate_weights(self):
         """根据逆频率计算类别权重。"""
@@ -411,7 +416,7 @@ class LASTileProcessor:
             for label in self.weights:
                 self.weights[label] /= weight_sum
             
-        print(f"计算类别权重: {self.weights}")
+        print(f"Calculated class weights: {self.weights}")
 
     def _save_label_map(self):
         """保存标签映射到JSON文件。"""
@@ -422,7 +427,7 @@ class LASTileProcessor:
         with open(map_file, 'w', encoding='utf-8') as f:
             json.dump(json_map, f, indent=2, ensure_ascii=False)
             
-        print(f"标签映射已保存到 {map_file}")
+        print(f"Saved label mapping to {map_file}")
 
     def _save_label_stats(self):
         """保存标签统计信息到JSON文件。"""
@@ -441,7 +446,7 @@ class LASTileProcessor:
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=2, ensure_ascii=False)
             
-        print(f"标签统计信息已保存到 {stats_file}")
+        print(f"Saved label statistics to {stats_file}")
 
     def _save_sample_weights_json(self):
         """保存样本权重到JSON文件。"""
@@ -451,7 +456,7 @@ class LASTileProcessor:
         with open(weights_file, 'w', encoding='utf-8') as f:
             json.dump(self.sample_weights, f, indent=2, ensure_ascii=False)
             
-        print(f"样本权重已保存到 {weights_file}")
+        print(f"Saved sample weights to {weights_file}")
     
 
 def process_las_tiles(input_path: Union[str, Path],
@@ -464,18 +469,18 @@ def process_las_tiles(input_path: Union[str, Path],
                       save_sample_weight: bool = False,
                       require_labels: Optional[List[int]] = None):
     """
-    便捷函数：处理LAS/LAZ文件分块。
+    Convenience function: Process LAS/LAZ file tiling.
     
     Args:
-        input_path: LAS文件路径或包含LAS文件的目录
-        output_dir: 输出目录 (默认: 与输入文件同目录)
-        window_size: (x_size, y_size) 矩形窗口大小
-        min_points: 有效分块的最小点数阈值
-        max_points: 分块进一步细分的最大点数阈值
-        label_remap: 是否将标签重映射为连续值
-        label_count: 是否统计标签数量并计算权重
-        save_sample_weight: 是否保存样本权重
-        require_labels: 需要保留的标签列表，其他标签会被设为-1
+        input_path: LAS file path or directory containing LAS files
+        output_dir: Output directory (default: same as input file directory)
+        window_size: (x_size, y_size) rectangular window size
+        min_points: Minimum point threshold for valid tiles
+        max_points: Maximum point threshold for further subdivision
+        label_remap: Whether to remap labels to continuous values
+        label_count: Whether to count labels and calculate weights
+        save_sample_weight: Whether to save sample weights
+        require_labels: List of labels to keep, other labels will be set to invalid value
     """
     processor = LASTileProcessor(
         input_path=input_path,
@@ -493,8 +498,8 @@ def process_las_tiles(input_path: Union[str, Path],
 
 if __name__ == "__main__":
     # 示例使用
-    input_path = r"path/to/your/las/files"
-    output_dir = r"path/to/output/directory"
+    input_path = r"E:\data\DALES\dales_las\test"
+    output_dir = r"E:\data\DALES\dales_las\test_out"
     
     process_las_tiles(
         input_path=input_path,

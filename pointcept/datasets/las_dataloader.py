@@ -29,6 +29,8 @@ class LasDataset(DefaultDataset):
         "segment",
         "intensity",
         "echo_ratio",
+        "is_first",
+        "is_last",
     ]
     
     def __init__(
@@ -121,11 +123,29 @@ class LasDataset(DefaultDataset):
             
             # Extract intensity if available
             if hasattr(las, "intensity"):
-                data_dict["intensity"] = las.intensity
+                intensity = np.array(las.intensity, dtype=np.float32)
+                # 标准化：减去均值，除以标准差
+                intensity_mean = intensity.mean()
+                intensity_std = intensity.std()
+                if intensity_std > 0:
+                    data_dict["intensity"] = (intensity - intensity_mean) / intensity_std
+                else:
+                    # 如果标准差为0，说明所有值相同，直接置为0
+                    data_dict["intensity"] = np.zeros_like(intensity)
             
             # Calculate echo ratio if return_number and num_returns are available
             if hasattr(las, "return_number") and hasattr(las, "number_of_returns"):
-                data_dict["echo_ratio"] = (las.return_number / (las.number_of_returns + 1e-6))
+                return_number = np.array(las.return_number, dtype=np.float32)
+                number_of_returns = np.array(las.number_of_returns, dtype=np.float32)
+                
+                # Echo ratio
+                data_dict["echo_ratio"] = return_number / (number_of_returns + 1e-6)
+                
+                # Is first return: 1 if return_number == 1, else -1
+                data_dict["is_first"] = np.where(return_number == 1, 1, -1).astype(np.float32)
+                
+                # Is last return: 1 if return_number == number_of_returns, else -1
+                data_dict["is_last"] = np.where(return_number == number_of_returns, 1, -1).astype(np.float32)
 
         except Exception as e:
             logger = get_root_logger()

@@ -29,6 +29,8 @@ class DefaultDataset(Dataset):
     VALID_ASSETS = [
         "coord", # 坐标
         "echo_ratio", # 回波穿透比
+        "is_first", # 是否为首个回波
+        "is_last", # 是否为末次回波
         "color", # 颜色
         "normal", # 法线
         "intensity", # 强度
@@ -138,6 +140,12 @@ class DefaultDataset(Dataset):
             
         if "intensity" in data_dict.keys():
             data_dict["intensity"] = data_dict["intensity"].astype(np.float32)
+
+        if "is_first" in data_dict.keys():
+            data_dict["is_first"] = data_dict["is_first"].astype(np.float32)
+
+        if "is_last" in data_dict.keys():
+            data_dict["is_last"] = data_dict["is_last"].astype(np.float32)
             
         # segment、instance 为 int32，若不存在用-1填充
         if "segment" in data_dict.keys():
