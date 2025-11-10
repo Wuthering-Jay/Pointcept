@@ -18,14 +18,14 @@ class Criteria(object):
         for loss_cfg in self.cfg:
             self.criteria.append(LOSSES.build(cfg=loss_cfg))
 
-    def __call__(self, pred, target):
+    def __call__(self, pred, data_dict):
         # 
         if len(self.criteria) == 0:
             # loss computation occur in model
             return pred
         loss = 0
         for c in self.criteria:
-            loss += c(pred, target)
+            loss += c(pred, data_dict)
         return loss
 
 

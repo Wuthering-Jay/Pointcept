@@ -89,7 +89,7 @@ class PointGroup(nn.Module):
         logit_pred = self.seg_head(feat)
 
         # compute loss
-        seg_loss = self.seg_criteria(logit_pred, segment)
+        seg_loss = self.seg_criteria(logit_pred, data_dict)
 
         mask = (instance != self.instance_ignore_index).float()
         bias_gt = instance_centroid - coord

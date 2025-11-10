@@ -230,9 +230,9 @@ class CACSegmentor(nn.Module):
                 * self.cos_temp
             )
 
-            seg_loss = self.criteria(refine_logits, target) * self.main_weight
-            pre_loss = self.criteria(cac_pred, target) * self.pre_weight
-            pre_self_loss = self.criteria(pre_logits, target) * self.pre_self_weight
+            seg_loss = self.criteria(refine_logits, dict(segment=target)) * self.main_weight
+            pre_loss = self.criteria(cac_pred, dict(segment=target)) * self.pre_weight
+            pre_self_loss = self.criteria(pre_logits, dict(segment=target)) * self.pre_self_weight
             kl_loss = (
                 self.get_distill_loss(
                     pred=refine_logits, soft=cac_pred.detach(), target=target
@@ -259,7 +259,7 @@ class CACSegmentor(nn.Module):
                 * self.cos_temp
             )
 
-            loss = self.criteria(seg_logits, data_dict["segment"])
+            loss = self.criteria(seg_logits, data_dict)
             return dict(loss=loss, seg_logits=refine_logits)
 
         else:

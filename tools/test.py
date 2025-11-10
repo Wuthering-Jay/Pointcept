@@ -1,5 +1,10 @@
 import os
 import sys
+
+# Fix OpenMP conflicts
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['OMP_NUM_THREADS'] = '4'
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pointcept.engines.defaults import (

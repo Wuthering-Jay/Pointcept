@@ -1,34 +1,35 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-resume = True 
+resume = False
 evaluate = True
-batch_size = 6  # bs: total bs in all gpus
+batch_size = 12  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
-empty_cache_freq = 10
+empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pt-v2m5-2-base"
-weight = "exp/dales/semseg-pt-v2m5-2-base/model/model_last.pth"
-num_classes = 8
-grid_size = 0.5
+save_path = "exp/yn2other/semseg-pt-v2m5-5-base"
+weight = "exp/yn2other/semseg-pt-v2m5-5-base/model/model_last.pth"
+num_classes = 9
+grid_size = 0.4
 
 # dataset settings
 dataset_type = "LasDataset"
-data_root = r"E:\data\DALES\dales_las\tile"
+data_root = r"D:\data\梯田\tile"
 
 ignore_index = -1
 names = [
     "ground",
     "vegetation",
-    "cars",
-    "trucks",
-    "power lines",
-    "fences",
-    "poles",
-    "buildings",
+    "building",
+    "water noise",
+    "bridge",
+    "powerline",
+    "vehicle",
+    "wall",
+    "greenhouse"
 ]
 
 
@@ -37,20 +38,20 @@ model = dict(
     type="DefaultSegmentor",
     backbone=dict(
         type="PT-v2m5",
-        in_channels=5,
+        in_channels=6,
         num_classes=num_classes,
         patch_embed_depth=1,
         patch_embed_channels=24,
         patch_embed_groups=6,
-        patch_embed_neighbours=24,
-        enc_depths=(2, 2, 2, 2),
+        patch_embed_neighbours=16,
+        enc_depths=(1, 1, 2, 1),
         enc_channels=(48, 96, 192, 256),
         enc_groups=(6, 12, 24, 32),
-        enc_neighbours=(32, 32, 32, 32),
+        enc_neighbours=(24, 24, 24, 24),
         dec_depths=(1, 1, 1, 1),
         dec_channels=(24, 48, 96, 192),
         dec_groups=(4, 6, 12, 24),
-        dec_neighbours=(32, 32, 32, 32),
+        dec_neighbours=(24, 24, 24, 24),
         grid_sizes=(
             0.15 * grid_size * 20,
             0.375 * grid_size * 20,
@@ -69,29 +70,20 @@ model = dict(
     criteria=[
         dict(type="CrossEntropyLoss",
              weight=[
-0.029863364538482734,
-0.03398225904062671,
-0.12243503810237331,
-0.18499369495513007,
-0.18097568901650252,
-0.14633794302484154,
-0.2577365862459248,
-0.04367542507611825
+0.0037901644761514255, 
+0.0027356245194391127, 
+0.02385907442916716, 
+0.10541776690881985, 
+0.3086741567739812, 
+0.17604196263019753, 
+0.262540082425767, 
+0.08570600263251131, 
+0.031235165203965336
                  ],
              loss_weight=1.0,
              ignore_index=-1),
-        dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
-#         dict(type="FocalLoss", gamma=2.0, alpha=[
-# 0.029863364538482734,
-# 0.03398225904062671,
-# 0.12243503810237331,
-# 0.18499369495513007,
-# 0.18097568901650252,
-# 0.14633794302484154,
-# 0.2577365862459248,
-# 0.04367542507611825
-#                  ], reduction="mean", loss_weight=1.0, ignore_index=-1),
-        dict(type="LACLoss", k_neighbors=16, loss_weight=0.2, ignore_index=-1),
+        # dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
+        dict(type="FocalLoss", gamma=2.0, alpha=0.5, reduction="mean", loss_weight=1.0, ignore_index=-1),
     ],
     # fmt: on
 )
@@ -143,8 +135,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "is_first", "is_last",),
-                feat_keys=("coord", "is_first", "is_last",),
+                keys=("coord", "segment","intensity","is_first","is_last",),
+                feat_keys=("coord","intensity","is_first","is_last",),
             ),
         ],
         test_mode=False,
@@ -152,7 +144,7 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        split="test",
+        split="val",
         data_root=data_root,
         transform=[
             dict(type="CenterShift", apply_z=True),
@@ -181,8 +173,8 @@ data = dict(
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "is_first", "is_last",),
-                feat_keys=("coord", "is_first", "is_last",),
+                keys=("coord", "segment","intensity","is_first","is_last", ),
+                feat_keys=("coord","intensity","is_first","is_last", ),
             ),
         ],
         test_mode=False,
@@ -212,8 +204,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "index", "is_first", "is_last",),
-                    feat_keys=("coord", "is_first", "is_last",),
+                    keys=("coord", "index","intensity","is_first","is_last", ),
+                    feat_keys=("coord","intensity","is_first","is_last",),
                 ),
             ],
             aug_transform=[
@@ -225,6 +217,44 @@ data = dict(
                         center=[0, 0, 0],
                         p=1,
                     )
+                ],
+                [
+                    dict(
+                        type="RandomRotateTargetAngle",
+                        angle=[1 / 2],
+                        axis="z",
+                        center=[0, 0, 0],
+                        p=1,
+                    )
+                ],
+                [
+                    dict(
+                        type="RandomRotateTargetAngle",
+                        angle=[1],
+                        axis="z",
+                        center=[0, 0, 0],
+                        p=1,
+                    )
+                ],
+                [
+                    dict(
+                        type="RandomRotateTargetAngle",
+                        angle=[3 / 2],
+                        axis="z",
+                        center=[0, 0, 0],
+                        p=1,
+                    )
+                ],
+                # [dict(type="RandomScale", scale=[0.95, 0.95])],
+                # [dict(type="RandomScale", scale=[1.05, 1.05])],
+                [
+                    dict(type="RandomScale", scale=[0.95, 0.95]),
+                    dict(type="RandomFlip", p=1),
+                ],
+                [dict(type="RandomScale", scale=[1, 1]), dict(type="RandomFlip", p=1)],
+                [
+                    dict(type="RandomScale", scale=[1.05, 1.05]),
+                    dict(type="RandomFlip", p=1),
                 ],
             ],
         ),

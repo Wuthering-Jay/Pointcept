@@ -107,11 +107,11 @@ class PointPromptTraining(nn.Module):
         seg_logits = logit_scale * sim
         # train
         if self.training:
-            loss = self.criteria(seg_logits, data_dict["segment"])
+            loss = self.criteria(seg_logits, data_dict)
             return dict(loss=loss)
         # eval
         elif "segment" in data_dict.keys():
-            loss = self.criteria(seg_logits, data_dict["segment"])
+            loss = self.criteria(seg_logits, data_dict)
             return dict(loss=loss, seg_logits=seg_logits)
         # test
         else:

@@ -27,11 +27,11 @@ class DefaultSegmentor(nn.Module):
         seg_logits = self.backbone(input_dict)
         # train, 计算损失
         if self.training:
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return dict(loss=loss)
         # eval，存在标签"segment"时，计算损失和 logits
         elif "segment" in input_dict.keys():
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return dict(loss=loss, seg_logits=seg_logits)
         # test, 计算分割 logits
         else:
@@ -93,11 +93,11 @@ class DefaultSegmentorV2(nn.Module):
             return_dict["point"] = point
         # train，计算损失
         if self.training:
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return_dict["loss"] = loss
         # eval，存在标签"segment"时，计算损失和 logits
         elif "segment" in input_dict.keys():
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return_dict["loss"] = loss
             return_dict["seg_logits"] = seg_logits
         # test，计算分割 logits
@@ -178,11 +178,11 @@ class DINOEnhancedSegmentor(nn.Module):
             return_dict["point"] = point
         # train
         if self.training:
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return_dict["loss"] = loss
         # eval
         elif "segment" in input_dict.keys():
-            loss = self.criteria(seg_logits, input_dict["segment"])
+            loss = self.criteria(seg_logits, input_dict)
             return_dict["loss"] = loss
             return_dict["seg_logits"] = seg_logits
         # test
@@ -238,10 +238,10 @@ class DefaultClassifier(nn.Module):
             feat = point
         cls_logits = self.cls_head(feat)
         if self.training:
-            loss = self.criteria(cls_logits, input_dict["category"])
+            loss = self.criteria(cls_logits, input_dict)
             return dict(loss=loss)
         elif "category" in input_dict.keys():
-            loss = self.criteria(cls_logits, input_dict["category"])
+            loss = self.criteria(cls_logits, input_dict)
             return dict(loss=loss, cls_logits=cls_logits)
         else:
             return dict(cls_logits=cls_logits)

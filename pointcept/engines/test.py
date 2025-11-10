@@ -6,6 +6,11 @@ Please cite our work if the code is helpful to you.
 """
 
 import os
+
+# Fix OpenMP conflicts
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['OMP_NUM_THREADS'] = '4'
+
 import time
 import numpy as np
 from collections import OrderedDict
