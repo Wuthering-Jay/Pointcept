@@ -1,17 +1,17 @@
 _base_ = ["../_base_/default_runtime.py"]
 
 # misc custom setting
-resume = True 
+resume = False
 evaluate = True
-batch_size = 6  # bs: total bs in all gpus
+batch_size = 4  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 10
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pt-v2m5-2-base"
-weight = "exp/dales/semseg-pt-v2m5-2-base/model/model_last.pth"
+save_path = "exp/dales/semseg-pt-v2m5-5-base"
+# weight = "exp/dales/semseg-pt-v2m5-5-base/model/model_last.pth"
 num_classes = 8
 grid_size = 0.5
 
@@ -69,14 +69,23 @@ model = dict(
     criteria=[
         dict(type="CrossEntropyLoss",
              weight=[
-0.029863364538482734,
-0.03398225904062671,
-0.12243503810237331,
-0.18499369495513007,
-0.18097568901650252,
-0.14633794302484154,
-0.2577365862459248,
-0.04367542507611825
+0.01268676632377641,
+0.015400017216779319,
+0.10531771265092733,
+0.19560422330067181,
+0.189266257828576,
+0.13761895521749942,
+0.3216673232477179,
+0.02243874421405171
+
+# 0.029863364538482734,
+# 0.03398225904062671,
+# 0.12243503810237331,
+# 0.18499369495513007,
+# 0.18097568901650252,
+# 0.14633794302484154,
+# 0.2577365862459248,
+# 0.04367542507611825
                  ],
              loss_weight=1.0,
              ignore_index=-1),
@@ -91,7 +100,7 @@ model = dict(
 # 0.2577365862459248,
 # 0.04367542507611825
 #                  ], reduction="mean", loss_weight=1.0, ignore_index=-1),
-        dict(type="LACLoss", k_neighbors=16, loss_weight=0.2, ignore_index=-1),
+        # dict(type="LACLoss", k_neighbors=16, loss_weight=0.2, ignore_index=-1),
     ],
     # fmt: on
 )
@@ -117,7 +126,7 @@ data = dict(
         split="train",
         data_root=data_root,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            dict(type="CentroidShift", apply_z=True),
             dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
             # dict(type="RandomRotateTargetAngle", angle=(1/2, 1, 3/2), center=[0, 0, 0], axis="z", p=0.75),
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
@@ -138,7 +147,7 @@ data = dict(
             # dict(type="PointClip", point_cloud_range=(-35.2, -35.2, -4, 35.2, 35.2, 2)),
             # dict(type="SphereCrop", sample_rate=0.8, mode="random"),
             # dict(type="SphereCrop", point_max=120000, mode="random"),
-            dict(type="CenterShift", apply_z=True),
+            # dict(type="CentroidShift", apply_z=True),
             # dict(type="StandardNormalize", apply_z=True),
             dict(type="ToTensor"),
             dict(
@@ -155,7 +164,7 @@ data = dict(
         split="test",
         data_root=data_root,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            dict(type="CentroidShift", apply_z=True),
             dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
             # dict(type="RandomRotateTargetAngle", angle=(1/2, 1, 3/2), center=[0, 0, 0], axis="z", p=0.75),
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
@@ -176,7 +185,7 @@ data = dict(
             # dict(type="PointClip", point_cloud_range=(-35.2, -35.2, -4, 35.2, 35.2, 2)),
             # dict(type="SphereCrop", sample_rate=0.8, mode="random"),
             # dict(type="SphereCrop", point_max=120000, mode="random"),
-            dict(type="CenterShift", apply_z=True),
+            # dict(type="CentroidShift", apply_z=True),
             # dict(type="StandardNormalize", apply_z=True),
             dict(type="ToTensor"),
             dict(
@@ -193,7 +202,7 @@ data = dict(
         split="test",
         data_root=data_root,
         transform=[
-            dict(type="CenterShift", apply_z=True),
+            dict(type="CentroidShift", apply_z=True),
         ],
         test_mode=True,
         test_cfg=dict(

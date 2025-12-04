@@ -583,23 +583,24 @@ class LASProcessor:
                         setattr(new_las, dimension, np.zeros(len(segment_indices), dtype=np.int32))
                     else:
                         # Original classification handling logic
-                        original_labels = getattr(las_data, dimension)[segment_indices]
+                        original_labels = np.array(getattr(las_data, dimension)[segment_indices], dtype=np.int32)
                         if self.label_remap:
-                            max_label_val = np.max(original_labels) + 1
-                            remap_array = np.ones(max_label_val, dtype=np.int32) * -1
+                            # Use original labels as default, then apply remapping
+                            remapped_labels = np.copy(original_labels)
                             
+                            # Apply remapping only for labels in the mapping dictionary
                             for orig_label, new_label in self.label_map.items():
-                                if orig_label < max_label_val:
-                                    remap_array[orig_label] = new_label
+                                mask = original_labels == orig_label
+                                remapped_labels[mask] = new_label
                             
+                            # Ignored labels keep their original values
                             for label in self.ignore_labels:
-                                if label < max_label_val:
-                                    remap_array[label] = label
+                                mask = original_labels == label
+                                remapped_labels[mask] = label
                             
-                            remapped_labels = remap_array[original_labels]
-                            setattr(new_las, dimension, remapped_labels)
+                            setattr(new_las, dimension, remapped_labels.astype(np.uint8))
                         else:
-                            setattr(new_las, dimension, original_labels)
+                            setattr(new_las, dimension, original_labels.astype(np.uint8))
                 else:
                     setattr(new_las, dimension, getattr(las_data, dimension)[segment_indices])
             
@@ -611,6 +612,10 @@ class LASProcessor:
             # Copy CRS information if available
             if hasattr(las_data, 'crs'):
                 new_las.crs = las_data.crs
+            
+            # Update header statistics before saving
+            # This ensures the header accurately reflects the data
+            new_las.update_header()
                 
             # Save to file
             output_path = self.output_dir / f"{base_name}_segment_{i:04d}.las"
@@ -763,12 +768,12 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\DALES\dales_las\train"
-    output_dir=r"E:\data\DALES\dales_las\tile\train"
-    window_size=(50., 50.)
+    input_path=r"E:\data\梯田\output3\KM35.las"
+    output_dir=r"E:\data\梯田\output3\KM35"
+    window_size=(150., 150.)
     min_points=4096*2
-    max_points=4096*16*2
-    ignore_labels=[0]
+    max_points=None
+    ignore_labels=[]
     require_labels=None
     # ignore_labels=None
     # require_labels=[2,5,6,9,11,13,15]

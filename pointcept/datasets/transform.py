@@ -237,6 +237,21 @@ class CenterShift(object):
             data_dict["coord"] -= shift
         return data_dict
 
+ 
+@TRANSFORMS.register_module()
+# 坐标偏移（质心）
+class CentroidShift(object):
+    def __init__(self, apply_z=True):
+        self.apply_z = apply_z
+
+    def __call__(self, data_dict):
+        if "coord" in data_dict.keys():
+            centroid = np.mean(data_dict["coord"], axis=0)
+            if not self.apply_z:
+                centroid[2] = 0
+            data_dict["coord"] -= centroid
+        return data_dict
+
 
 @TRANSFORMS.register_module()
 # 随机偏移
@@ -445,6 +460,20 @@ class ClipGaussianJitter(object):
             data_dict["coord"] += jitter
             if self.store_jitter:
                 data_dict["jitter"] = jitter
+        return data_dict
+    
+
+@TRANSFORMS.register_module()
+# 强度标准化
+class NormalizeIntensity(object):
+    def __call__(self, data_dict):
+        if "intensity" in data_dict.keys():
+            intensity = data_dict["intensity"]
+            mean = np.mean(intensity)
+            std = np.std(intensity)
+            if std == 0:
+                std = 1
+            data_dict["intensity"] = (intensity - mean) / (std + 1e-8)
         return data_dict
 
 

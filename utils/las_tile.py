@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 import laspy
 from pathlib import Path
@@ -11,8 +12,7 @@ import multiprocessing
 class LASTileProcessor:
     """
     Specialized tile processor for LAS/LAZ point cloud files.
-    Includes label remapping, weight calculation, and label filtering functions, 
-    but removes NPY format saving functionality.
+    Includes label remapping, weight calculation, label filtering, and trash bin mechanism.
     """
     
     def __init__(self,
@@ -24,7 +24,9 @@ class LASTileProcessor:
                  label_remap: bool = False,
                  label_count: bool = False,
                  save_sample_weight: bool = False,
-                 require_labels: Optional[List[int]] = None):
+                 require_labels: Optional[List[int]] = None,
+                 use_trash_bin: bool = False,
+                 trash_bin_label: int = 0):
         """
         Initialize LAS tile processor.
         
@@ -37,7 +39,9 @@ class LASTileProcessor:
             label_remap: Whether to remap labels to continuous values
             label_count: Whether to count labels and calculate weights
             save_sample_weight: Whether to save sample weights
-            require_labels: List of labels to keep, other labels will be set to invalid value (31 or 255)
+            require_labels: List of labels to keep (foreground classes)
+            use_trash_bin: Whether to enable trash bin mechanism
+            trash_bin_label: Label value for trash bin (default: 0, recommended)
         """
         self.input_path = Path(input_path)
         self.output_dir = Path(output_dir) if output_dir else self.input_path.parent
@@ -48,10 +52,20 @@ class LASTileProcessor:
         self.label_count = label_count
         self.save_sample_weight = save_sample_weight
         self.require_labels = require_labels
+        self.use_trash_bin = use_trash_bin
+        self.trash_bin_label = trash_bin_label
+        
+        # 验证垃圾桶机制配置
+        if self.use_trash_bin:
+            if not self.require_labels:
+                raise ValueError("use_trash_bin=True requires require_labels to be specified!")
+            if self.trash_bin_label != 0:
+                print(f"Warning: trash_bin_label={self.trash_bin_label} (recommended value is 0)")
+            print(f"Trash bin mechanism enabled: label {self.trash_bin_label}")
         
         # 标签处理相关属性
         if self.save_sample_weight and not self.label_count:
-            print("Warning: `save_sample_weight` is True, so `label_count` is being automatically enabled to calculate class weights.")
+            print("Warning: `save_sample_weight` is True, so `label_count` is being automatically enabled.")
             self.label_count = True
             
         from collections import defaultdict
@@ -60,6 +74,7 @@ class LASTileProcessor:
         self.weights = {}
         self.sample_weights = {}
         self.label_map = {}
+        self.background_labels = set()  # 记录背景类标签
         
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True)
@@ -158,17 +173,7 @@ class LASTileProcessor:
         return segments
     
     def apply_max_threshold(self, points: np.ndarray, segments: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Subdivide segments that exceed max_points threshold.
-        
-        Args:
-            points: Nx3 point coordinate array
-            segments: List of index arrays representing segments
-            
-        Returns:
-            Processed segments meeting maximum threshold
-        """
-        # 快速识别需要细分的分块
+        """Subdivide segments that exceed max_points threshold."""
         large_segment_indices = [i for i, segment in enumerate(segments) if len(segment) > self.max_points]
         
         if not large_segment_indices:
@@ -176,33 +181,27 @@ class LASTileProcessor:
         
         print(f"Subdividing {len(large_segment_indices)} segments exceeding {self.max_points} points...")
         
-        # 保留小分块，处理大分块
         result_segments = [segment for i, segment in enumerate(segments) if i not in large_segment_indices]
         large_segments = [segments[i] for i in large_segment_indices]
         
-        # 递归细分分块的函数
         def process_segment(segment):
             if len(segment) <= self.max_points:
                 return [segment]
             
-            # 使用现有的细分逻辑
             segment_points = points[segment]
             ranges = np.ptp(segment_points[:, :2], axis=0)
             split_dim = np.argmax(ranges[:2])
             sorted_indices = np.argsort(segment_points[:, split_dim])
             
-            # 分成两半
             mid = len(sorted_indices) // 2
             left_half = segment[sorted_indices[:mid]]
             right_half = segment[sorted_indices[mid:]]
             
-            # 递归处理两半
             result = []
             result.extend(process_segment(left_half))
             result.extend(process_segment(right_half))
             return result
         
-        # 使用多线程处理大分块
         max_workers = max(1, min(multiprocessing.cpu_count(), len(large_segments)))
         with tqdm(total=len(large_segments), desc="Subdividing large segments", unit="segment") as pbar:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -215,31 +214,18 @@ class LASTileProcessor:
         return result_segments
     
     def apply_min_threshold(self, points: np.ndarray, segments: List[np.ndarray]) -> List[np.ndarray]:
-        """
-        Merge segments smaller than min_points threshold to nearest segments.
-        
-        Args:
-            points: Nx3 point coordinate array
-            segments: List of index arrays representing segments
-            
-        Returns:
-            Processed segments meeting minimum threshold
-        """
+        """Merge segments smaller than min_points threshold to nearest segments."""
         if len(segments) <= 1:
             return segments
         
         print(f"Merging segments with fewer than {self.min_points} points...")
         
-        # 计算所有分块的质心
         centroids = np.array([np.mean(points[segment][:, :2], axis=0) for segment in segments])
-        
-        # 识别小分块
         small_segments = [i for i, segment in enumerate(segments) if len(segment) < self.min_points]
         
         if not small_segments:
             return segments
         
-        # 按大小升序处理小分块（先合并最小的）
         small_segments.sort(key=lambda i: len(segments[i]))
         
         with tqdm(total=len(small_segments), desc="Merging small segments", unit="segment") as pbar:
@@ -248,7 +234,6 @@ class LASTileProcessor:
                     pbar.update(1)
                     continue
                 
-                # 找到最近的非小分块
                 nearest_idx = -1
                 nearest_dist = float('inf')
                 
@@ -259,14 +244,12 @@ class LASTileProcessor:
                             nearest_dist = dist
                             nearest_idx = i
                 
-                # 合并到最近的分块
                 if nearest_idx != -1 and nearest_idx < len(segments):
                     segments[nearest_idx] = np.concatenate([segments[nearest_idx], segments[small_idx]])
                     segments[small_idx] = np.array([], dtype=int)
                 
                 pbar.update(1)
         
-        # 移除空分块
         return [segment for segment in segments if len(segment) > 0]
     
     def save_segments_as_las(self, las_file: Path, las_data: laspy.LasData, segments: List[np.ndarray]):
@@ -282,11 +265,37 @@ class LASTileProcessor:
         
         print(f"Saving {len(segments)} segments as LAS files...")
         for i, segment_indices in tqdm(enumerate(segments), total=len(segments), desc="Saving LAS segments", unit="file"):
-            # 创建header副本，使用兼容的LAS版本
+            # 标签过滤 - 在创建LAS之前先过滤
+            if hasattr(las_data, 'classification'):
+                segment_labels = las_data.classification[segment_indices]
+                
+                if self.use_trash_bin:
+                    # 垃圾桶模式：保留所有点
+                    valid_mask = np.ones(len(segment_indices), dtype=bool)
+                else:
+                    # 传统模式：只保留前景类点
+                    if self.require_labels:
+                        valid_mask = np.zeros(len(segment_labels), dtype=bool)
+                        for label in self.require_labels:
+                            valid_mask |= (segment_labels == label)
+                        
+                        # 如果过滤后没有点了，跳过这个segment
+                        if not np.any(valid_mask):
+                            continue
+                    else:
+                        # 没有指定require_labels，保留所有点
+                        valid_mask = np.ones(len(segment_indices), dtype=bool)
+                
+                # 应用过滤
+                filtered_indices = segment_indices[valid_mask]
+            else:
+                # 没有classification字段，保留所有点
+                filtered_indices = segment_indices
+            
+            # 创建LAS文件
             header = laspy.LasHeader(point_format=las_data.header.point_format, 
                                      version=las_data.header.version)
             
-            # 复制坐标系信息
             header.x_scale = las_data.header.x_scale
             header.y_scale = las_data.header.y_scale
             header.z_scale = las_data.header.z_scale
@@ -294,138 +303,209 @@ class LASTileProcessor:
             header.y_offset = las_data.header.y_offset
             header.z_offset = las_data.header.z_offset
             
-            # 创建新的LAS数据
             new_las = laspy.LasData(header)
-            new_las.points = laspy.ScaleAwarePointRecord.zeros(len(segment_indices), header=header)
+            new_las.points = laspy.ScaleAwarePointRecord.zeros(len(filtered_indices), header=header)
             
-            # 复制分块中的点数据
+            # 复制所有维度数据
             for dimension in las_data.point_format.dimension_names:
-                setattr(new_las, dimension, getattr(las_data, dimension)[segment_indices])
+                setattr(new_las, dimension, getattr(las_data, dimension)[filtered_indices])
             
-            # 标签处理
-            if hasattr(new_las, 'classification'):
-                # 应用require_labels逻辑：将非require_labels的点设为无效值
-                if self.require_labels:
-                    require_mask = np.zeros(len(new_las.classification), dtype=bool)
-                    for label in self.require_labels:
-                        require_mask |= (new_las.classification == label)
-                    # 使用31作为无效值（LAS 1.2/1.3兼容）或255（LAS 1.4+）
-                    invalid_value = 255 if las_data.header.version >= (1, 4) else 31
-                    new_las.classification[~require_mask] = invalid_value
-                
-                # 应用标签重映射
-                if self.label_remap:
-                    original_labels = new_las.classification.copy()
+            # 标签重映射
+            if hasattr(new_las, 'classification') and self.label_remap:
+                if self.use_trash_bin:
+                    # 垃圾桶模式：背景类映射到trash_bin_label，前景类按映射表
+                    original_labels = np.array(new_las.classification, dtype=np.int32)
+                    remapped_labels = np.full(len(original_labels), self.trash_bin_label, dtype=np.int32)
+                    
+                    # 前景类应用映射
+                    for original, remapped in self.label_map.items():
+                        if original != self.trash_bin_label:
+                            mask = (original_labels == original)
+                            remapped_labels[mask] = remapped
+                    
+                    new_las.classification[:] = remapped_labels.astype(np.uint8)
+                else:
+                    # 传统模式：只对保留的前景类进行映射
+                    original_labels = np.array(new_las.classification, dtype=np.int32)
+                    remapped_labels = np.copy(original_labels)
+                    
                     for original, remapped in self.label_map.items():
                         mask = (original_labels == original)
-                        new_las.classification[mask] = remapped
+                        remapped_labels[mask] = remapped
+                    
+                    new_las.classification[:] = remapped_labels.astype(np.uint8)
             
             # 计算并保存样本权重
-            if self.save_sample_weight and hasattr(new_las, 'classification'):
+            if self.save_sample_weight:
                 segment_name = f"{base_name}_segment_{i:04d}"
-                unique_labels_in_segment, counts = np.unique(new_las.classification, return_counts=True)
+                current_sample_weight = 0.0
                 
-                segment_weights = {}
-                for label, count in zip(unique_labels_in_segment, counts):
-                    if int(label) in self.weights:
-                        segment_weights[str(label)] = {
-                            'weight': self.weights[int(label)],
-                            'count': int(count)
-                        }
+                if hasattr(new_las, 'classification'):
+                    # 获取segment中的唯一标签（已经过remap处理）
+                    unique_labels_in_segment = np.unique(new_las.classification)
+                    # 对每个唯一标签的权重求和
+                    current_sample_weight = sum(
+                        self.weights.get(int(label), 0.0) 
+                        for label in unique_labels_in_segment
+                    )
                 
-                self.sample_weights[segment_name] = segment_weights
+                # 存储权重
+                self.sample_weights[segment_name] = float(current_sample_weight)
             
-            # 复制VLR和CRS信息
+            # 复制元数据
             if hasattr(las_data.header, 'vlrs'):
                 for vlr in las_data.header.vlrs:
                     new_las.header.vlrs.append(vlr)
                     
             if hasattr(las_data, 'crs'):
                 new_las.crs = las_data.crs
+            
+            # Update header statistics before saving
+            # This ensures the header accurately reflects the data
+            new_las.update_header()
                 
-            # 保存文件
             output_path = self.output_dir / f"{base_name}_segment_{i:04d}.las"
             new_las.write(output_path)
-    
+
     def _collect_labels(self):
         """收集所有文件的标签信息，用于重映射和计数。"""
         print("Collecting labels from all files...")
-        unique_labels = set()
+        foreground_labels = set()
 
         for las_file in tqdm(self.las_files, desc="Scanning files", unit="file"):
             with laspy.open(las_file) as fh:
                 las_data = fh.read()
                 
-                if hasattr(las_data, 'classification'):
-                    # 应用require_labels过滤逻辑
+                if not hasattr(las_data, 'classification'):
+                    continue
+                
+                all_labels = las_data.classification
+                
+                if self.require_labels:
+                    # 识别前景和背景
+                    foreground_mask = np.zeros(len(all_labels), dtype=bool)
+                    for label in self.require_labels:
+                        foreground_mask |= (all_labels == label)
+                    
+                    # 记录背景类（用于调试）
+                    background_labels_in_file = np.unique(all_labels[~foreground_mask])
+                    self.background_labels.update(background_labels_in_file)
+                    
+                    # 只收集前景类用于remap
+                    valid_labels = np.unique(all_labels[foreground_mask])
+                    foreground_labels.update(valid_labels)
+                else:
+                    # 如果没有指定require_labels，所有标签都是前景
+                    valid_labels = np.unique(all_labels)
+                    foreground_labels.update(valid_labels)
+                
+                if self.label_count:
+                    # 标签计数 - 修正：传统模式也只统计前景类
                     if self.require_labels:
-                        # 只统计require_labels中的标签
-                        mask = np.zeros(len(las_data.classification), dtype=bool)
+                        # 无论哪种模式，都只统计前景类
+                        foreground_mask = np.zeros(len(all_labels), dtype=bool)
                         for label in self.require_labels:
-                            mask |= (las_data.classification == label)
-                        valid_labels = np.unique(las_data.classification[mask])
-                        # 添加-1标签（非require_labels的点会被设为-1）
-                        if not mask.all():  # 如果有点不在require_labels中
-                            unique_labels.add(-1)
+                            foreground_mask |= (all_labels == label)
+                        
+                        fg_labels = all_labels[foreground_mask]
+                        unique_fg, counts_fg = np.unique(fg_labels, return_counts=True)
+                        file_counts = {int(label): int(count) 
+                                     for label, count in zip(unique_fg, counts_fg)}
                     else:
-                        # 如果没有指定require_labels，使用所有标签
-                        mask = np.ones(len(las_data.classification), dtype=bool)
-                        valid_labels = np.unique(las_data.classification[mask])
+                        # 没有指定require_labels，统计所有标签
+                        unique_file_labels, counts = np.unique(all_labels, return_counts=True)
+                        file_counts = {int(label): int(count) 
+                                     for label, count in zip(unique_file_labels, counts)}
                     
-                    unique_labels.update(valid_labels)
+                    self.file_label_counts[las_file.name] = file_counts
                     
-                    if self.label_count:
-                        # 计算实际的标签分布（包括无效标签）
-                        modified_labels = las_data.classification.copy()
-                        if self.require_labels:
-                            # 将非require_labels的点设为无效值
-                            require_mask = np.zeros(len(modified_labels), dtype=bool)
-                            for label in self.require_labels:
-                                require_mask |= (modified_labels == label)
-                            # 使用31作为无效值（LAS 1.2/1.3兼容）或255（LAS 1.4+）
-                            invalid_value = 255 if las_data.header.version >= (1, 4) else 31
-                            modified_labels[~require_mask] = invalid_value
-                        
-                        unique_file_labels, counts = np.unique(modified_labels, return_counts=True)
-                        file_counts = {int(label): int(count) for label, count in zip(unique_file_labels, counts)}
-                        self.file_label_counts[las_file.name] = file_counts
-                        
-                        for label, count in file_counts.items():
-                            self.label_counts[int(label)] += count
-                            
+                    for label, count in file_counts.items():
+                        self.label_counts[int(label)] += count
+        
         self.label_counts = dict(sorted(self.label_counts.items()))
+        
         if self.label_remap:
-            sorted_labels = sorted(unique_labels)
-            self.label_map = {int(original): i for i, original in enumerate(sorted_labels)}
-            print(f"Created label mapping: {self.label_map}")
+            sorted_labels = sorted(foreground_labels)
+            if self.use_trash_bin:
+                # 垃圾桶占据trash_bin_label，前景类从trash_bin_label+1开始映射
+                # 或者如果trash_bin_label=0，前景类从1开始
+                if self.trash_bin_label == 0:
+                    self.label_map = {int(orig): i+1 for i, orig in enumerate(sorted_labels)}
+                else:
+                    # 如果trash_bin_label不是0，需要避开它
+                    self.label_map = {}
+                    next_id = 0
+                    for orig in sorted_labels:
+                        if next_id == self.trash_bin_label:
+                            next_id += 1
+                        self.label_map[int(orig)] = next_id
+                        next_id += 1
+                
+                print(f"Foreground label mapping: {self.label_map}")
+                print(f"Background labels (will map to {self.trash_bin_label}): {sorted(self.background_labels)}")
+            else:
+                # 传统模式，从0开始
+                self.label_map = {int(orig): i for i, orig in enumerate(sorted_labels)}
+                print(f"Label mapping: {self.label_map}")
 
     def _calculate_weights(self):
-        """根据逆频率计算类别权重。"""
+        """根据逆频率计算类别权重（只对前景类计算）。"""
         if not self.label_counts:
             return
-            
+        
+        # 修正：两种模式都只对前景类计算权重
         total_points = sum(self.label_counts.values())
         self.weights = {}
         
+        if self.use_trash_bin:
+            # 垃圾桶模式：垃圾桶权重为0
+            self.weights[self.trash_bin_label] = 0.0
+        
+        # 只对label_counts中的类别（已经是前景类）计算权重
         for label, count in self.label_counts.items():
             frequency = count / total_points
-            self.weights[int(label)] = (1.0 / max(frequency**(1/2), 1e-6))
-
-        weight_sum = sum(self.weights.values())
+            
+            if self.label_remap:
+                # 使用remap后的标签
+                remapped_label = self.label_map.get(label, label)
+            else:
+                remapped_label = label
+            
+            self.weights[remapped_label] = (1.0 / max(frequency**(1/2), 1e-6))
+        
+        # 归一化（排除垃圾桶）
+        if self.use_trash_bin:
+            weight_sum = sum(w for label, w in self.weights.items() 
+                           if label != self.trash_bin_label)
+        else:
+            weight_sum = sum(self.weights.values())
+        
         if weight_sum > 0:
             for label in self.weights:
-                self.weights[label] /= weight_sum
-            
+                if not self.use_trash_bin or label != self.trash_bin_label:
+                    self.weights[label] /= weight_sum
+        
         print(f"Calculated class weights: {self.weights}")
 
     def _save_label_map(self):
         """保存标签映射到JSON文件。"""
         import json
         map_file = self.output_dir / "label_mapping.json"
-        json_map = {str(k): int(v) for k, v in self.label_map.items()}
+        
+        # 构建完整的映射信息
+        mapping_data = {
+            "use_trash_bin": self.use_trash_bin,
+            "trash_bin_label": self.trash_bin_label,
+            "foreground_mapping": {str(k): int(v) for k, v in self.label_map.items()},
+        }
+        
+        if self.use_trash_bin:
+            mapping_data["background_classes"] = sorted([int(x) for x in self.background_labels])
+            mapping_data["num_foreground_classes"] = len(self.label_map)
+            mapping_data["total_classes"] = len(self.label_map) + 1  # +1 for trash bin
         
         with open(map_file, 'w', encoding='utf-8') as f:
-            json.dump(json_map, f, indent=2, ensure_ascii=False)
+            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
             
         print(f"Saved label mapping to {map_file}")
 
@@ -435,6 +515,8 @@ class LASTileProcessor:
         stats_file = self.output_dir / "label_statistics.json"
         
         stats = {
+            "use_trash_bin": self.use_trash_bin,
+            "trash_bin_label": self.trash_bin_label if self.use_trash_bin else None,
             "total_counts": {str(k): int(v) for k, v in self.label_counts.items()},
             "file_counts": {
                 file_name: {str(k): int(v) for k, v in counts.items()} 
@@ -442,6 +524,9 @@ class LASTileProcessor:
             },
             "weights": {str(k): float(v) for k, v in self.weights.items()}
         }
+        
+        if self.use_trash_bin:
+            stats["background_classes"] = sorted([int(x) for x in self.background_labels])
         
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, indent=2, ensure_ascii=False)
@@ -467,7 +552,9 @@ def process_las_tiles(input_path: Union[str, Path],
                       label_remap: bool = False,
                       label_count: bool = False,
                       save_sample_weight: bool = False,
-                      require_labels: Optional[List[int]] = None):
+                      require_labels: Optional[List[int]] = None,
+                      use_trash_bin: bool = False,
+                      trash_bin_label: int = 0):
     """
     Convenience function: Process LAS/LAZ file tiling.
     
@@ -480,7 +567,9 @@ def process_las_tiles(input_path: Union[str, Path],
         label_remap: Whether to remap labels to continuous values
         label_count: Whether to count labels and calculate weights
         save_sample_weight: Whether to save sample weights
-        require_labels: List of labels to keep, other labels will be set to invalid value
+        require_labels: List of labels to keep (foreground classes)
+        use_trash_bin: Whether to enable trash bin mechanism
+        trash_bin_label: Label value for trash bin (default: 0)
     """
     processor = LASTileProcessor(
         input_path=input_path,
@@ -491,24 +580,43 @@ def process_las_tiles(input_path: Union[str, Path],
         label_remap=label_remap,
         label_count=label_count,
         save_sample_weight=save_sample_weight,
-        require_labels=require_labels
+        require_labels=require_labels,
+        use_trash_bin=use_trash_bin,
+        trash_bin_label=trash_bin_label
     )
     processor.process_all_files()
 
 
 if __name__ == "__main__":
-    # 示例使用
-    input_path = r"E:\data\DALES\dales_las\test"
-    output_dir = r"E:\data\DALES\dales_las\test_out"
+    # 示例1: 传统模式（背景类设为无效值）
+    # input_path = r"E:\data\DALES\dales_las\test"
+    # output_dir = r"E:\data\DALES\dales_las\test_traditional"
+    
+    # process_las_tiles(
+    #     input_path=input_path,
+    #     output_dir=output_dir,
+    #     window_size=(20.0, 20.0),
+    #     min_points=1000,
+    #     max_points=8000,
+    #     label_remap=True,
+    #     label_count=True,
+    #     save_sample_weight=True,
+    #     require_labels=[1, 2, 3, 4, 5, 6],
+    #     use_trash_bin=False  # 传统模式
+    # )
+    
+    # 示例2: 垃圾桶模式（背景类标记为0）
+    input_path = r"E:\data\梯田\output3\KM35.las"
+    output_dir = r"E:\data\梯田\output3\tile"
     
     process_las_tiles(
         input_path=input_path,
         output_dir=output_dir,
-        window_size=(20.0, 20.0),
-        min_points=1000,
-        max_points=8000,
-        label_remap=True,  # 启用标签重映射为连续值
+        window_size=(100.0, 100.0),
+        min_points=4096,
+        max_points=None,
+        label_remap=True,  # 启用标签重映射
         label_count=True,  # 启用标签计数
         save_sample_weight=True,  # 计算样本权重
-        require_labels=[1, 2, 3, 4, 5, 6]  # 只保留这些标签，其他设为-1
+        require_labels=None,  # 前景类列表
     )
