@@ -606,17 +606,17 @@ if __name__ == "__main__":
     # )
     
     # 示例2: 垃圾桶模式（背景类标记为0）
-    input_path = r"E:\data\梯田\output3\KM35.las"
-    output_dir = r"E:\data\梯田\output3\tile"
+    input_path = r"E:\data\DALES\dales_las\train"
+    output_dir = r"E:\data\DALES\dales_las\tile\train"
     
     process_las_tiles(
         input_path=input_path,
         output_dir=output_dir,
-        window_size=(100.0, 100.0),
+        window_size=(50.0, 50.0),
         min_points=4096,
         max_points=None,
         label_remap=True,  # 启用标签重映射
         label_count=True,  # 启用标签计数
         save_sample_weight=True,  # 计算样本权重
-        require_labels=None,  # 前景类列表
+        require_labels=[1,2,3,4,5,6,7,8],  # 前景类列表
     )

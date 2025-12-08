@@ -171,6 +171,11 @@ class SemSegEvaluator(HookBase):
                     acc=accuracy
                 )
             )
+            if self.trainer.cfg.empty_cache:
+                torch.cuda.empty_cache()
+            if self.trainer.cfg.empty_cache_freq > 0:
+                if (i + 1) % self.trainer.cfg.empty_cache_freq == 0:
+                    torch.cuda.empty_cache()
         loss_avg = self.trainer.storage.history("val_loss").avg
         intersection = self.trainer.storage.history("val_intersection").total
         union = self.trainer.storage.history("val_union").total

@@ -424,7 +424,7 @@ class Config:
 
         def _format_basic_types(k, v, use_mapping=False):
             if isinstance(v, str):
-                v_str = f"'{v}'"
+                v_str = repr(v)  # Use repr() to properly escape backslashes in paths
             else:
                 v_str = str(v)
 

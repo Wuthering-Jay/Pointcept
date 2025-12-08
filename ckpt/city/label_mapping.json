@@ -1,0 +1,14 @@
+{
+  "use_trash_bin": false,
+  "trash_bin_label": 0,
+  "foreground_mapping": {
+    "2": 0,
+    "5": 1,
+    "6": 2,
+    "10": 3,
+    "11": 4,
+    "13": 5,
+    "15": 6,
+    "22": 7
+  }
+}

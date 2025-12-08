@@ -3,7 +3,7 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = False
 evaluate = True
-batch_size = 4  # bs: total bs in all gpus
+batch_size = 3  # bs: total bs in all gpus
 mix_prob = 0
 empty_cache = False
 empty_cache_freq = 10
@@ -107,7 +107,7 @@ model = dict(
 
 # scheduler settings
 epoch = 50
-eval_epoch = 10
+eval_epoch = 50
 optimizer = dict(type="AdamW", lr=1e-3, weight_decay=1e-4)
 
 
