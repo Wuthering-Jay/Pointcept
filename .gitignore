@@ -13,4 +13,6 @@ outputs/
 .idea
 */.DS_Store
 **/*.out
+ckpt
+libs/Release
 Dockerfile
