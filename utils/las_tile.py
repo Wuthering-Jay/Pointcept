@@ -293,8 +293,12 @@ class LASTileProcessor:
                 filtered_indices = segment_indices
             
             # 创建LAS文件
+            version = las_data.header.version
+            if version.major == 1 and version.minor < 2:
+                from laspy.header import Version
+                version = Version(1, 2)
             header = laspy.LasHeader(point_format=las_data.header.point_format, 
-                                     version=las_data.header.version)
+                                     version=version)
             
             header.x_scale = las_data.header.x_scale
             header.y_scale = las_data.header.y_scale
@@ -303,12 +307,17 @@ class LASTileProcessor:
             header.y_offset = las_data.header.y_offset
             header.z_offset = las_data.header.z_offset
             
-            new_las = laspy.LasData(header)
-            new_las.points = laspy.ScaleAwarePointRecord.zeros(len(filtered_indices), header=header)
+            # 复制额外维度定义到新 header
+            for extra_dim in las_data.point_format.extra_dimensions:
+                header.add_extra_dim(laspy.ExtraBytesParams(
+                    name=extra_dim.name,
+                    type=extra_dim.dtype,
+                    description=extra_dim.description if hasattr(extra_dim, 'description') else ""
+                ))
             
-            # 复制所有维度数据
-            for dimension in las_data.point_format.dimension_names:
-                setattr(new_las, dimension, getattr(las_data, dimension)[filtered_indices])
+            new_las = laspy.LasData(header)
+            # 直接使用点数组索引来保留所有属性（包括标准维度、GPS Time 和额外维度）
+            new_las.points = las_data.points[filtered_indices]
             
             # 标签重映射
             if hasattr(new_las, 'classification') and self.label_remap:

@@ -105,8 +105,12 @@ class LASMerger:
         # Read first segment to get header and point format
         with laspy.open(segment_files[0]) as fh:
             first_segment = fh.read()
+            version = first_segment.header.version
+            if version.major == 1 and version.minor < 2:
+                from laspy.header import Version
+                version = Version(1, 2)
             header = laspy.LasHeader(point_format=first_segment.header.point_format,
-                                     version=first_segment.header.version)
+                                     version=version)
             
             # Explicitly copy scale and offset from first segment to ensure consistency
             header.x_scale = first_segment.header.x_scale
@@ -115,6 +119,14 @@ class LASMerger:
             header.x_offset = first_segment.header.x_offset
             header.y_offset = first_segment.header.y_offset
             header.z_offset = first_segment.header.z_offset
+            
+            # Copy extra dimensions to preserve all attributes (e.g., GPS Time, custom fields)
+            for extra_dim in first_segment.point_format.extra_dimensions:
+                header.add_extra_dim(laspy.ExtraBytesParams(
+                    name=extra_dim.name,
+                    type=extra_dim.dtype,
+                    description=extra_dim.description if hasattr(extra_dim, 'description') else ""
+                ))
             
             # Copy VLRs and CRS
             if hasattr(first_segment.header, 'vlrs'):
@@ -128,7 +140,8 @@ class LASMerger:
         total_points = 0
         for segment_file in segment_files:
             with laspy.open(segment_file) as fh:
-                total_points += len(fh.read())
+                # total_points += len(fh.read())
+                total_points += fh.header.point_count
         
         print(f"  Total points: {total_points}")
         
@@ -161,7 +174,7 @@ class LASMerger:
                     segment = fh.read()
                     segment_points = len(segment)
                     
-                    # Copy all dimensions
+                    # Copy all standard dimensions
                     for dimension in segment.point_format.dimension_names:
                         # Apply inverse label remapping if needed
                         if dimension == 'classification' and self.inverse_label_map and remap_array is not None:
@@ -183,6 +196,14 @@ class LASMerger:
                         else:
                             dim_data = getattr(segment, dimension)
                             merged_data = getattr(merged_las, dimension)
+                            merged_data[point_offset:point_offset+segment_points] = dim_data
+                    
+                    # Copy extra dimensions (e.g., GPS Time, custom fields)
+                    for extra_dim in segment.point_format.extra_dimensions:
+                        dim_name = extra_dim.name
+                        if hasattr(segment, dim_name) and hasattr(merged_las, dim_name):
+                            dim_data = getattr(segment, dim_name)
+                            merged_data = getattr(merged_las, dim_name)
                             merged_data[point_offset:point_offset+segment_points] = dim_data
                     
                     point_offset += segment_points
