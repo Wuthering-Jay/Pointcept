@@ -251,6 +251,95 @@ class CentroidShift(object):
                 centroid[2] = 0
             data_dict["coord"] -= centroid
         return data_dict
+    
+
+@TRANSFORMS.register_module()
+class ZPercentileCenterShift(object):
+    def __init__(self, percentile=1.0):
+        self.percentile = percentile
+
+    def __call__(self, data_dict):
+        if "coord" in data_dict.keys():
+            coords = data_dict["coord"]
+            x_min, y_min = coords[:, 0].min(), coords[:, 1].min()
+            x_max, y_max = coords[:, 0].max(), coords[:, 1].max()
+            z_shift_val = np.percentile(coords[:, 2], self.percentile)
+            shift = np.array([
+                (x_min + x_max) / 2.0,
+                (y_min + y_max) / 2.0,
+                z_shift_val
+            ])
+            data_dict["coord"] -= shift
+            data_dict["coord_shift"] = shift
+            if "core_bbox" in data_dict:
+                data_dict["core_bbox"][0::2] -= shift[0]
+                data_dict["core_bbox"][1::2] -= shift[1]
+
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class RobustLogIntensity(object):
+    """
+    [Normalization] 针对 Intensity 的稳健对数归一化。
+    解决长尾分布、量纲不统一、整体亮度漂移问题。
+    """
+    def __init__(self, clip_min=-3.0, clip_max=3.0, eps=1e-8):
+        self.clip_min = clip_min
+        self.clip_max = clip_max
+        self.eps = eps  # 添加小量防止数值问题
+
+    def __call__(self, data_dict):
+        if "intensity" not in data_dict:
+            return data_dict
+
+        intensity = data_dict["intensity"]
+        
+        # 确保 intensity 是 numpy 数组（如果是 tensor 则转换）
+        if not isinstance(intensity, np.ndarray):
+            intensity = intensity.numpy() if hasattr(intensity, 'numpy') else np.array(intensity)
+        
+        # 1. 数据清洗：处理负值和零值
+        intensity = np.maximum(intensity, 0)  # 将负值设为0
+        
+        # 2. Log 变换 (压缩长尾) - 添加小量防止 log(0)
+        intensity_log = np.log(intensity + self.eps)
+        
+        # 3. 检查并处理无效值
+        if np.any(~np.isfinite(intensity_log)):
+            # 如果有无效值，用中位数填充
+            valid_mask = np.isfinite(intensity_log)
+            if np.any(valid_mask):
+                median_valid = np.median(intensity_log[valid_mask])
+                intensity_log[~valid_mask] = median_valid
+            else:
+                # 如果全部无效，使用默认值
+                intensity_log = np.zeros_like(intensity_log)
+        
+        # 4. 计算稳健统计量 (Instance-wise)
+        median = np.median(intensity_log)
+        q75, q25 = np.percentile(intensity_log, [75, 25])
+        iqr = q75 - q25
+        
+        # 防止除零
+        if iqr < self.eps:
+            iqr = 1.0
+            
+        # 5. 稳健标准化 (N(0, 1))
+        intensity_norm = (intensity_log - median) / iqr
+        
+        # 6. 截断极值 (抑制高反/极暗噪点)
+        intensity_norm = np.clip(intensity_norm, self.clip_min, self.clip_max)
+        
+        # 7. 处理可能产生的 nan
+        intensity_norm = np.nan_to_num(intensity_norm, nan=0.0, posinf=self.clip_max, neginf=self.clip_min)
+        
+        # 如果原始输入是 tensor，转换回 tensor
+        if isinstance(data_dict["intensity"], torch.Tensor):
+            intensity_norm = torch.from_numpy(intensity_norm).to(data_dict["intensity"].device)
+        
+        data_dict["intensity"] = intensity_norm
+        return data_dict
 
 
 @TRANSFORMS.register_module()

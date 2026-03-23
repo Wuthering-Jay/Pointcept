@@ -135,6 +135,21 @@ class LASMerger:
             header.y_offset = first_segment.header.y_offset
             header.z_offset = first_segment.header.z_offset
             
+            # Copy extra dimensions
+            for extra_dim in first_segment.point_format.extra_dimensions:
+                dim_name = extra_dim.name[:32] if len(extra_dim.name) > 32 else extra_dim.name
+                dim_desc = (extra_dim.description if hasattr(extra_dim, 'description') else "")
+                dim_desc = dim_desc[:32] if len(dim_desc) > 32 else dim_desc
+                header.add_extra_dim(laspy.ExtraBytesParams(
+                    name=dim_name,
+                    type=extra_dim.dtype,
+                    description=dim_desc
+                ))
+            
+            # 检查是否有 _origin_idx.npy 文件（新方式：独立文件）
+            first_idx_file = segment_files[0].parent / f"{segment_files[0].stem}_origin_idx.npy"
+            has_origin_idx = first_idx_file.exists()
+            
             # Copy VLRs and CRS
             if hasattr(first_segment.header, 'vlrs'):
                 for vlr in first_segment.header.vlrs:
@@ -147,7 +162,7 @@ class LASMerger:
         total_points = 0
         for segment_file in segment_files:
             with laspy.open(segment_file) as fh:
-                total_points += len(fh.read())
+                total_points += fh.header.point_count
         
         print(f"  Total points: {total_points}")
         
@@ -164,6 +179,9 @@ class LASMerger:
             for remapped_label, orig_label in self.inverse_label_map.items():
                 remap_array[remapped_label] = orig_label
         
+        # 收集所有 _origin_idx 用于后续排序
+        all_origin_idx = [] if has_origin_idx else None
+        
         # Process segments in batches to conserve memory
         BATCH_SIZE = 25  # Process this many segments before writing
         
@@ -179,6 +197,12 @@ class LASMerger:
                 with laspy.open(segment_file) as fh:
                     segment = fh.read()
                     segment_points = len(segment)
+                    
+                    # 读取 _origin_idx.npy 文件（如果存在）
+                    if has_origin_idx:
+                        idx_file = segment_file.parent / f"{segment_file.stem}_origin_idx.npy"
+                        if idx_file.exists():
+                            all_origin_idx.append(np.load(idx_file))
                     
                     # Copy all dimensions
                     for dimension in segment.point_format.dimension_names:
@@ -197,7 +221,31 @@ class LASMerger:
                             merged_data = getattr(merged_las, dimension)
                             merged_data[point_offset:point_offset+segment_points] = dim_data
                     
+                    # Copy extra dimensions
+                    for extra_dim in segment.point_format.extra_dimensions:
+                        dim_name = extra_dim.name
+                        if hasattr(segment, dim_name) and hasattr(merged_las, dim_name):
+                            dim_data = getattr(segment, dim_name)
+                            merged_data = getattr(merged_las, dim_name)
+                            merged_data[point_offset:point_offset+segment_points] = dim_data
+                    
                     point_offset += segment_points
+        
+        # 如果有 _origin_idx，按其排序以恢复原始点顺序
+        if has_origin_idx and all_origin_idx:
+            print("  Sorting by original index to restore point order...")
+            origin_idx_array = np.concatenate(all_origin_idx)
+            sort_indices = np.argsort(origin_idx_array)
+            
+            # 重新排列所有维度
+            for dimension in merged_las.point_format.dimension_names:
+                dim_data = getattr(merged_las, dimension)
+                setattr(merged_las, dimension, dim_data[sort_indices])
+            
+            # 重新排列 extra dimensions
+            for extra_dim in merged_las.point_format.extra_dimensions:
+                dim_data = getattr(merged_las, extra_dim.name)
+                setattr(merged_las, extra_dim.name, dim_data[sort_indices])
         
         # Save merged file
         merged_las.write(output_path)

@@ -7,6 +7,7 @@ from typing import Union, List, Tuple, Optional, Literal
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
+from numpy.lib import recfunctions as rfn
 
 
 class LASTileProcessor:
@@ -309,15 +310,19 @@ class LASTileProcessor:
             
             # 复制额外维度定义到新 header
             for extra_dim in las_data.point_format.extra_dimensions:
+                # Truncate name and description to 32 characters to comply with LAS spec
+                dim_name = extra_dim.name[:32] if len(extra_dim.name) > 32 else extra_dim.name
+                dim_desc = (extra_dim.description if hasattr(extra_dim, 'description') else "")
+                dim_desc = dim_desc[:32] if len(dim_desc) > 32 else dim_desc
                 header.add_extra_dim(laspy.ExtraBytesParams(
-                    name=extra_dim.name,
+                    name=dim_name,
                     type=extra_dim.dtype,
-                    description=extra_dim.description if hasattr(extra_dim, 'description') else ""
+                    description=dim_desc
                 ))
             
             new_las = laspy.LasData(header)
-            # 直接使用点数组索引来保留所有属性（包括标准维度、GPS Time 和额外维度）
-            new_las.points = las_data.points[filtered_indices]
+            # 使用 numpy 数组切片直接复制点记录（最高效）
+            new_las.points.array = las_data.points.array[filtered_indices]
             
             # 标签重映射
             if hasattr(new_las, 'classification') and self.label_remap:
@@ -375,6 +380,10 @@ class LASTileProcessor:
                 
             output_path = self.output_dir / f"{base_name}_segment_{i:04d}.las"
             new_las.write(output_path)
+            
+            # 保存 _origin_idx 为单独的 .npy 文件（用于 merge 时恢复原始顺序）
+            # idx_path = self.output_dir / f"{base_name}_segment_{i:04d}_origin_idx.npy"
+            # np.save(idx_path, filtered_indices.astype(np.uint64))
 
     def _collect_labels(self):
         """收集所有文件的标签信息，用于重映射和计数。"""
@@ -615,17 +624,17 @@ if __name__ == "__main__":
     # )
     
     # 示例2: 垃圾桶模式（背景类标记为0）
-    input_path = r"E:\data\DALES\dales_las\train"
-    output_dir = r"E:\data\DALES\dales_las\tile\train"
+    input_path = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\val"
+    output_dir = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile\val"
     
     process_las_tiles(
         input_path=input_path,
         output_dir=output_dir,
-        window_size=(50.0, 50.0),
-        min_points=4096,
+        window_size=(150.0, 150.0),
+        min_points=4096*2,
         max_points=None,
         label_remap=True,  # 启用标签重映射
         label_count=True,  # 启用标签计数
         save_sample_weight=True,  # 计算样本权重
-        require_labels=[1,2,3,4,5,6,7,8],  # 前景类列表
+        require_labels=[2,5,6,10,11,13,15,22],  # 前景类列表
     )

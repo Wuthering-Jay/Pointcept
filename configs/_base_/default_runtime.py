@@ -30,10 +30,11 @@ hooks = [
     dict(type="CheckpointLoader"),
     dict(type="ModelHook"),
     dict(type="IterationTimer", warmup_iter=2),
-    dict(type="InformationWriter"),
+    dict(type="InformationWriter", interval=10),
     dict(type="SemSegEvaluator"),
     dict(type="CheckpointSaver", save_freq=None),
     dict(type="PreciseEvaluator", test_last=False),
+    dict(type="CacheCleaner", time_multiplier=5,step_clean_interval=200),
 ]
 
 # Trainer

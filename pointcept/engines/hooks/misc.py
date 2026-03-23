@@ -78,13 +78,18 @@ class IterationTimer(HookBase):
 
 @HOOKS.register_module()
 class InformationWriter(HookBase):
-    def __init__(self):
+    def __init__(self, interval=1):
+        self.interval = interval
         self.curr_iter = 0
         self.model_output_keys = []
 
     def before_train(self):
         self.trainer.comm_info["iter_info"] = ""
         self.curr_iter = self.trainer.start_epoch * len(self.trainer.train_loader)
+        # if self.trainer.writer is not None and self.trainer.cfg.enable_wandb:
+        #     wandb.define_metric("params/*", step_metric="Iter")
+        #     wandb.define_metric("train_batch/*", step_metric="Iter")
+        #     wandb.define_metric("train/*", step_metric="Epoch")
 
     def before_step(self):
         self.curr_iter += 1
@@ -96,6 +101,38 @@ class InformationWriter(HookBase):
         )
         self.trainer.comm_info["iter_info"] += info
 
+    def _format_loss_str(self, key_vals):
+        """Format loss keys: total loss + optional parenthetical of sub-losses.
+
+        key_vals: list of (key, value) tuples from model_output_keys × storage.
+        Returns a string like: ``loss: 2.3702 (ce: 1.2345 lovasz: 1.1357)``
+        For non-loss keys, appended normally.
+        """
+        main_parts = []   # non-subloss entries
+        sub_parts = []    # loss/{name} entries
+        for key, val in key_vals:
+            if key.startswith("loss/"):
+                short = key[len("loss/"):]
+                sub_parts.append(f"{short}: {val:.4f}")
+            else:
+                entry = f"{key}: {val:.4f}"
+                if key == "loss" and sub_parts == [] and any(
+                    k.startswith("loss/") for k, _ in key_vals
+                ):
+                    # Will append sub after
+                    main_parts.append(("__loss__", entry))
+                else:
+                    main_parts.append((key, entry))
+
+        result = ""
+        for tag, entry in main_parts:
+            result += entry + " "
+            if tag == "__loss__" and sub_parts:
+                result += "(" + "  ".join(sub_parts) + ") "
+        if not any(t == "__loss__" for t, _ in main_parts) and sub_parts:
+            result += "(" + "  ".join(sub_parts) + ") "
+        return result
+
     def after_step(self):
         if "model_output_dict" in self.trainer.comm_info.keys():
             model_output_dict = self.trainer.comm_info["model_output_dict"]
@@ -103,10 +140,16 @@ class InformationWriter(HookBase):
             for key in self.model_output_keys:
                 self.trainer.storage.put_scalar(key, model_output_dict[key].item())
 
-        for key in self.model_output_keys:
-            self.trainer.comm_info["iter_info"] += "{key}: {value:.4f} ".format(
-                key=key, value=self.trainer.storage.history(key).val
-            )
+        # Only log every `interval` steps; always accumulate storage for correct avg
+        if self.curr_iter % self.interval != 0:
+            self.trainer.comm_info["iter_info"] = ""
+            return
+
+        key_vals = [
+            (key, self.trainer.storage.history(key).val)
+            for key in self.model_output_keys
+        ]
+        self.trainer.comm_info["iter_info"] += self._format_loss_str(key_vals)
         lr = self.trainer.optimizer.state_dict()["param_groups"][0]["lr"]
         self.trainer.comm_info["iter_info"] += "Lr: {lr:.5f}".format(lr=lr)
         self.trainer.logger.info(self.trainer.comm_info["iter_info"])
@@ -119,13 +162,27 @@ class InformationWriter(HookBase):
                     self.trainer.storage.history(key).val,
                     self.curr_iter,
                 )
+            # if self.trainer.cfg.enable_wandb:
+
+            #     wandb.log(
+            #         {"Iter": self.curr_iter, "params/lr": lr}, step=self.curr_iter
+            #     )
+            #     for key in self.model_output_keys:
+            #         wandb.log(
+            #             {
+            #                 "Iter": self.curr_iter,
+            #                 f"train_batch/{key}": self.trainer.storage.history(key).val,
+            #             },
+            #             step=wandb.run.step,
+            #         )
 
     def after_epoch(self):
         epoch_info = "Train result: "
-        for key in self.model_output_keys:
-            epoch_info += "{key}: {value:.4f} ".format(
-                key=key, value=self.trainer.storage.history(key).avg
-            )
+        key_vals = [
+            (key, self.trainer.storage.history(key).avg)
+            for key in self.model_output_keys
+        ]
+        epoch_info += self._format_loss_str(key_vals)
         self.trainer.logger.info(epoch_info)
         if self.trainer.writer is not None:
             for key in self.model_output_keys:
@@ -134,6 +191,17 @@ class InformationWriter(HookBase):
                     self.trainer.storage.history(key).avg,
                     self.trainer.epoch + 1,
                 )
+
+            # if self.trainer.cfg.enable_wandb:
+
+            #     for key in self.model_output_keys:
+            #         wandb.log(
+            #             {
+            #                 "Epoch": self.trainer.epoch + 1,
+            #                 f"train/{key}": self.trainer.storage.history(key).avg,
+            #             },
+            #             step=wandb.run.step,
+            #         )
 
 
 @HOOKS.register_module()
@@ -516,3 +584,198 @@ class GarbageHandler(HookBase):
     def after_train(self):
         gc.collect()
         torch.cuda.empty_cache()
+
+
+@HOOKS.register_module()
+class CacheCleaner(HookBase):
+    """GPU/CPU cache cleaner hook (interval-based + adaptive).
+
+    缓存清理策略:
+    - **固定清理点**: after_epoch (每个 epoch 结束)、after_train (训练→测试过渡)
+      始终执行 ``gc.collect()`` + ``torch.cuda.empty_cache()`` 释放碎片。
+    - **固定间隔清理**: 当 ``step_clean_interval`` 为正整数时，每隔 N 个 step
+      执行一次缓存清理。设为 ``None`` 时不进行固定间隔清理。
+    - **自适应清理**: 统计每个 step 的耗时，当某个 step 耗时超过
+      ``mean × time_multiplier`` 或超过 ``abs_threshold_sec`` 绝对阈值时，
+      执行清理以缓解显存震荡导致的卡顿。
+    - **warmup**: 前 ``warmup_steps`` 步只收集统计，不触发自适应清理。
+
+    每次清理都会在日志中输出原因和耗时信息。
+
+    Args:
+        warmup_steps (int): 热身步数，期间只统计不触发自适应清理。默认 10。
+        time_multiplier (float): 相对阈值倍数。step 耗时 > mean × multiplier 时触发。默认 2.0。
+        abs_threshold_sec (float): 绝对阈值秒数。step 耗时 > 该值时触发。
+            设为 0 或 None 禁用。默认 None。
+        window_size (int): 滑动窗口大小，用于计算均值。默认 50。
+        step_clean_interval (int | None): 固定间隔清理步数。为正整数时每 N 步
+            清理一次缓存；为 ``None`` 时不进行固定间隔清理。默认 None。
+    """
+
+    def __init__(
+        self,
+        warmup_steps=10,
+        time_multiplier=2.0,
+        abs_threshold_sec=None,
+        window_size=50,
+        step_clean_interval=None,
+    ):
+        self.warmup_steps = warmup_steps
+        self.time_multiplier = time_multiplier
+        self.abs_threshold_sec = abs_threshold_sec
+        self.window_size = window_size
+        self.step_clean_interval = step_clean_interval
+
+        # runtime state
+        self._step_times = []   # recent step durations (sliding window, train)
+        self._step_count = 0
+        self._step_start = None
+        self._clean_count = 0   # total cleans
+        # separate window for val/test iterations
+        self._ext_times = []
+        self._ext_count = 0
+        # logger may come from trainer (hook mode) or be set externally (test mode)
+        self._logger = None
+
+    # ------ helpers ------
+
+    @property
+    def logger(self):
+        """Return the logger — from trainer if attached, else the externally set one."""
+        if self._logger is not None:
+            return self._logger
+        if hasattr(self, "trainer") and self.trainer is not None:
+            return self.trainer.logger
+        return None
+
+    @logger.setter
+    def logger(self, value):
+        self._logger = value
+
+    def _clean(self, reason: str):
+        """Execute gc + cuda empty_cache and log the event."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        self._clean_count += 1
+        log = self.logger
+        if log is not None:
+            log.info(
+                f"[CacheCleaner] cache cleared (#{self._clean_count}) — {reason}"
+            )
+
+    def check_and_clean(self, elapsed: float, context: str = "val") -> bool:
+        """Interval + adaptive clean check for external callers (val / test loops).
+
+        Uses a separate sliding window from the train-step window so that
+        val/test timing statistics are independent of training timing.
+
+        Args:
+            elapsed: Wall-clock seconds for this iteration.
+            context: Label used in log messages (e.g. "val iter 42/200").
+
+        Returns:
+            True if a clean was triggered, False otherwise.
+        """
+        self._ext_count += 1
+        self._ext_times.append(elapsed)
+        if len(self._ext_times) > self.window_size:
+            self._ext_times.pop(0)
+
+        # Fixed interval cleaning
+        if (
+            self.step_clean_interval is not None
+            and self._ext_count % self.step_clean_interval == 0
+        ):
+            self._clean(
+                f"{context} — interval clean (every {self.step_clean_interval} iters)"
+            )
+            return True
+
+        # Skip adaptive check during warmup
+        if self._ext_count <= self.warmup_steps:
+            return False
+
+        mean_time = sum(self._ext_times) / len(self._ext_times)
+
+        if elapsed > mean_time * self.time_multiplier:
+            self._clean(
+                f"{context} took {elapsed:.3f}s "
+                f"(mean {mean_time:.3f}s × {self.time_multiplier} = "
+                f"{mean_time * self.time_multiplier:.3f}s)"
+            )
+            return True
+
+        if self.abs_threshold_sec and elapsed > self.abs_threshold_sec:
+            self._clean(
+                f"{context} took {elapsed:.3f}s "
+                f"(abs threshold {self.abs_threshold_sec:.3f}s)"
+            )
+            return True
+
+        return False
+
+    def reset_ext_stats(self):
+        """Reset external (val/test) timing statistics."""
+        self._ext_times.clear()
+        self._ext_count = 0
+
+    # ------ fixed cleaning points ------
+
+    def after_epoch(self):
+        # Reset ext window each epoch so statistics stay fresh
+        self.reset_ext_stats()
+        self._clean(f"end of epoch {self.trainer.epoch}")
+
+    def after_train(self):
+        self._clean("training finished, preparing for test")
+
+    # ------ step-level cleaning (train) ------
+
+    def before_step(self):
+        self._step_start = time.perf_counter()
+
+    def after_step(self):
+        if self._step_start is None:
+            return
+
+        elapsed = time.perf_counter() - self._step_start
+        self._step_count += 1
+
+        # update sliding window
+        self._step_times.append(elapsed)
+        if len(self._step_times) > self.window_size:
+            self._step_times.pop(0)
+
+        # Fixed interval cleaning
+        if (
+            self.step_clean_interval is not None
+            and self._step_count % self.step_clean_interval == 0
+        ):
+            self._clean(
+                f"step {self._step_count} — interval clean "
+                f"(every {self.step_clean_interval} steps)"
+            )
+            return
+
+        # skip warmup phase for adaptive cleaning
+        if self._step_count <= self.warmup_steps:
+            return
+
+        mean_time = sum(self._step_times) / len(self._step_times)
+
+        # check relative threshold
+        if elapsed > mean_time * self.time_multiplier:
+            self._clean(
+                f"step {self._step_count} took {elapsed:.3f}s "
+                f"(mean {mean_time:.3f}s × {self.time_multiplier} = "
+                f"{mean_time * self.time_multiplier:.3f}s)"
+            )
+            return
+
+        # check absolute threshold
+        if self.abs_threshold_sec and elapsed > self.abs_threshold_sec:
+            self._clean(
+                f"step {self._step_count} took {elapsed:.3f}s "
+                f"(abs threshold {self.abs_threshold_sec:.3f}s)"
+            )

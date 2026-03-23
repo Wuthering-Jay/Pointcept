@@ -12,6 +12,7 @@ from .spvcnn import *
 from .octformer import *
 from .oacnns import *
 from .pointnext import *
+from .deeplanet import *
 
 # from .swin3d import *
 

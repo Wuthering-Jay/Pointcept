@@ -29,7 +29,7 @@ def main():
     num_machines = 1
     machine_rank = 0
     dist_url = "auto"
-    config_file = "configs/dales/semseg-pt-v2m5-0-base.py"
+    config_file = "configs\yn2city\semseg-deeplanet-v2-0.py"
     options = None
 
     cfg = default_config_parser(config_file, options)

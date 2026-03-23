@@ -245,3 +245,180 @@ class DefaultClassifier(nn.Module):
             return dict(loss=loss, cls_logits=cls_logits)
         else:
             return dict(cls_logits=cls_logits)
+        
+
+@MODELS.register_module()
+class DeepLASegmentor(nn.Module):
+    """DeepLANet 专用 Segmentor，支持混合深监督 (Hybrid Deep Supervision)。
+
+    基于 DefaultSegmentorV2，增加以下功能:
+    1. 收集 backbone 的 aux_outputs (各 Encoder 阶段的中间特征)
+    2. 使用 pointops.interpolation 将低分辨率中间特征插值到原始分辨率
+    3. 动态辅助头 (Auxiliary Heads): 为每个 Encoder 阶段生成带 Dropout 的分类头
+    4. 双轨损失机制: criteria (主损失) + aux_criteria (辅助损失)
+
+    Args:
+        num_classes (int): 分类类别数
+        backbone_out_channels (int): backbone 输出特征维度
+        backbone (dict): backbone 配置
+        criteria (list[dict]): 主损失配置 (如 CE + Lovasz)
+        aux_criteria (list[dict]): 辅助损失配置 (如纯 CE)
+        aux_channels (list[int]): 各 Encoder 阶段的输出通道数，用于创建辅助头
+        aux_dropout (float): 辅助头的 Dropout 概率
+        aux_weights (tuple[float]): 各 stage 的辅助损失权重比例，如 (0.1, 0.2, 0.3, 0.4)
+                                     如果为 None，默认所有 stage 权重相等 (1.0)
+        freeze_backbone (bool): 是否冻结 backbone 参数
+    """
+
+    def __init__(
+        self,
+        num_classes,
+        backbone_out_channels,
+        backbone=None,
+        criteria=None,
+        aux_criteria=None,
+        aux_channels=None,
+        aux_dropout=0.1,
+        aux_weights=None,
+        freeze_backbone=False,
+    ):
+        super().__init__()
+        import pointops
+
+        self.pointops = pointops
+        self.num_classes = num_classes
+
+        # 主分割头
+        self.seg_head = (
+            nn.Linear(backbone_out_channels, num_classes)
+            if num_classes > 0
+            else nn.Identity()
+        )
+
+        # Backbone
+        self.backbone = build_model(backbone)
+        self.criteria = build_criteria(criteria)
+        self.aux_criteria = build_criteria(aux_criteria) if aux_criteria else None
+
+        # 冻结 backbone
+        self.freeze_backbone = freeze_backbone
+        if self.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+
+        # 动态创建辅助头
+        # aux_channels 应与 backbone 的 enc_channels 对应
+        self.aux_heads = None
+        self.aux_weights = None
+        if aux_channels is not None and len(aux_channels) > 0:
+            self.aux_heads = nn.ModuleList()
+            for ch in aux_channels:
+                head = nn.Sequential(
+                    nn.Dropout(p=aux_dropout),
+                    nn.Linear(ch, num_classes),
+                )
+                self.aux_heads.append(head)
+
+            # 设置各 stage 的权重比例
+            if aux_weights is not None:
+                assert len(aux_weights) == len(aux_channels), (
+                    f"aux_weights 长度 ({len(aux_weights)}) 必须与 "
+                    f"aux_channels 长度 ({len(aux_channels)}) 一致"
+                )
+                self.aux_weights = aux_weights
+            else:
+                # 默认权重均为 1.0
+                self.aux_weights = tuple([1.0] * len(aux_channels))
+
+    def forward(self, input_dict, return_point=False):
+        point = Point(input_dict)
+
+        # 保存原始坐标和 offset，用于辅助特征插值
+        origin_coord = point.coord.clone()
+        origin_offset = point.offset.clone()
+
+        # Backbone 前向
+        point = self.backbone(point)
+
+        # 处理 pooling_parent 层级 (与 DefaultSegmentorV2 一致)
+        if isinstance(point, Point):
+            while "pooling_parent" in point.keys():
+                assert "pooling_inverse" in point.keys()
+                parent = point.pop("pooling_parent")
+                inverse = point.pop("pooling_inverse")
+                parent.feat = torch.cat([parent.feat, point.feat[inverse]], dim=-1)
+                point = parent
+            feat = point.feat
+        else:
+            feat = point
+
+        # 主分割头
+        seg_logits = self.seg_head(feat)
+
+        return_dict = dict()
+        if return_point:
+            return_dict["point"] = point
+
+        # =====================================================================
+        # 混合深监督: 处理辅助输出
+        # =====================================================================
+        aux_logits_list = []
+        if (
+            self.training
+            and self.aux_heads is not None
+            and self.aux_criteria is not None
+            and hasattr(point, "aux_outputs")
+            and point.aux_outputs is not None
+        ):
+            aux_outputs = point.aux_outputs
+
+            for i, aux_points in enumerate(aux_outputs):
+                if i >= len(self.aux_heads):
+                    break
+
+                aux_coord, aux_feat, aux_offset = aux_points
+
+                # 使用 pointops.interpolation 将低分辨率特征插值到原始分辨率
+                # interpolation(src_coord, dst_coord, src_feat, src_offset, dst_offset)
+                # 必须在 FP32 下执行，否则 1/dist 的操作在 float16 (AMP) 下极易产生 inf/nan
+                with torch.amp.autocast('cuda', enabled=False):
+                    interpolated_feat = self.pointops.interpolation(
+                        aux_coord.float(), origin_coord.float(), aux_feat.float(), aux_offset, origin_offset
+                    )
+
+                # 通过辅助头生成 logits
+                aux_logits = self.aux_heads[i](interpolated_feat)
+                aux_logits_list.append(aux_logits)
+
+        # =====================================================================
+        # 计算损失
+        # =====================================================================
+        if self.training:
+            # 主损失
+            loss = self.criteria(seg_logits, input_dict)
+
+            # 辅助损失
+            if len(aux_logits_list) > 0 and self.aux_criteria is not None:
+                aux_loss = 0.0
+                for i, aux_logits in enumerate(aux_logits_list):
+                    stage_loss = self.aux_criteria(aux_logits, input_dict)
+                    # 应用各 stage 的权重比例
+                    weighted_loss = stage_loss * self.aux_weights[i]
+                    aux_loss = aux_loss + weighted_loss
+                # aux_criteria 的 loss_weight 已在 build_criteria 中处理
+                loss = loss + aux_loss
+
+            return_dict["loss"] = loss
+            return_dict["l_aux"] = aux_loss if len(aux_logits_list) > 0 else None
+
+        elif "segment" in input_dict.keys():
+            # Eval 模式: 只计算主损失
+            loss = self.criteria(seg_logits, input_dict)
+            return_dict["loss"] = loss
+            return_dict["seg_logits"] = seg_logits
+
+        else:
+            # Test 模式
+            return_dict["seg_logits"] = seg_logits
+
+        return return_dict

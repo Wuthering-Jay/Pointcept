@@ -3,113 +3,99 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = False
 evaluate = True
-batch_size = 3  # bs: total bs in all gpus
-mix_prob = 0
+batch_size = 2  # bs: total bs in all gpus
+num_worker = 2
+mix_prob = 4
 empty_cache = False
-empty_cache_freq = 10
+empty_cache_freq = 100
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/dales/semseg-pt-v2m5-5-base"
-# weight = "exp/dales/semseg-pt-v2m5-5-base/model/model_last.pth"
+save_path = "exp/yn2city/semseg-deeplanet-v2-20260323"
+# weight = "exp/yn/semseg-pt-v2m5-1-base/model/model_last.pth"
 num_classes = 8
-grid_size = 0.5
+grid_size = 0.75
 
 # dataset settings
 dataset_type = "LasDataset"
-data_root = r"E:\data\DALES\dales_las\tile"
+data_root = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile"
 
 ignore_index = -1
 names = [
     "ground",
     "vegetation",
-    "cars",
-    "trucks",
-    "power lines",
-    "fences",
-    "poles",
-    "buildings",
+    "building",
+    "bridge",
+    "powerline",
+    "vehicle",
+    "wall",
+    "greenhouse"
+]
+
+class_weight = [
+    0.013817545610175072,
+    0.014948150592024706,
+    0.023757059743400432,
+    0.14248988080367028,
+    0.5757914131469801,
+    0.1064141385417331,
+    0.04740625042980346,
+    0.07537556113221294
 ]
 
 
 # model settings
 model = dict(
-    type="DefaultSegmentor",
+    type="DeepLASegmentor",
+    num_classes=num_classes,
+    backbone_out_channels=64,
     backbone=dict(
-        type="PT-v2m5",
-        in_channels=5,
-        num_classes=num_classes,
+        type="DeepLANet-v2",
+        in_channels=6,
         patch_embed_depth=1,
-        patch_embed_channels=24,
-        patch_embed_groups=6,
-        patch_embed_neighbours=24,
-        enc_depths=(2, 2, 2, 2),
-        enc_channels=(48, 96, 192, 256),
-        enc_groups=(6, 12, 24, 32),
-        enc_neighbours=(32, 32, 32, 32),
+        patch_embed_channels=32,
+        patch_embed_neighbours=16,
+        enc_depths=(10, 10, 30, 10),
+        enc_channels=(64, 128, 256, 512),
+        enc_neighbours=(16, 16, 16, 16),
         dec_depths=(1, 1, 1, 1),
-        dec_channels=(24, 48, 96, 192),
-        dec_groups=(4, 6, 12, 24),
-        dec_neighbours=(32, 32, 32, 32),
+        dec_channels=(64, 128, 256, 512),
+        dec_neighbours=(16, 16, 16, 16),
         grid_sizes=(
-            0.15 * grid_size * 20,
-            0.375 * grid_size * 20,
-            0.9375 * grid_size * 20,
-            2.34375 * grid_size * 20,
+            3 * grid_size,
+            7.5 * grid_size,
+            18.75 * grid_size,
+            45.875 * grid_size,
         ),  # x3, x2.5, x2.5, x2.5
-        attn_qkv_bias=True,
-        pe_multiplier=False,
-        pe_bias=True,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.3,
+        drop_path_rate=0.2,
         enable_checkpoint=False,
-        unpool_backend="interp",  # map / interp
+        unpool_backend="interp",
+        # 深层网络稳定性优化
+        enable_deep_supervision=True,   # 启用 HDS (混合深监督)
+        enable_layer_scale=True,        # 启用 LayerScale
+        layer_scale_init_value=1e-5,    # LayerScale 初始值
     ),
-    # fmt: off
     criteria=[
-        dict(type="CrossEntropyLoss",
-             weight=[
-0.01268676632377641,
-0.015400017216779319,
-0.10531771265092733,
-0.19560422330067181,
-0.189266257828576,
-0.13761895521749942,
-0.3216673232477179,
-0.02243874421405171
-
-# 0.029863364538482734,
-# 0.03398225904062671,
-# 0.12243503810237331,
-# 0.18499369495513007,
-# 0.18097568901650252,
-# 0.14633794302484154,
-# 0.2577365862459248,
-# 0.04367542507611825
-                 ],
-             loss_weight=1.0,
-             ignore_index=-1),
-        dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
-#         dict(type="FocalLoss", gamma=2.0, alpha=[
-# 0.029863364538482734,
-# 0.03398225904062671,
-# 0.12243503810237331,
-# 0.18499369495513007,
-# 0.18097568901650252,
-# 0.14633794302484154,
-# 0.2577365862459248,
-# 0.04367542507611825
-#                  ], reduction="mean", loss_weight=1.0, ignore_index=-1),
-        # dict(type="LACLoss", k_neighbors=16, loss_weight=0.2, ignore_index=-1),
+        dict(type="CrossEntropyLoss", loss_weight=1.0, ignore_index=-1, weight=class_weight),
+        # dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
     ],
-    # fmt: on
+    # 辅助损失配置 (Hybrid Deep Supervision)
+    # loss_weight=0.4 相当于原来的 hds_alpha
+    aux_criteria=[
+        dict(type="CrossEntropyLoss", loss_weight=0.4, ignore_index=-1, weight=class_weight),
+    ],
+    # 辅助头通道数，需与 enc_channels 对应
+    aux_channels=(64, 128, 256, 512),
+    aux_dropout=0.1,
+    # 各 stage 的辅助损失权重比例 (越深的层权重越大)
+    aux_weights=(0.1, 0.2, 0.3, 0.4),
 )
 
 # scheduler settings
 epoch = 50
 eval_epoch = 10
 optimizer = dict(type="AdamW", lr=1e-3, weight_decay=1e-4)
-
+clip_grad = 5.0
 
 scheduler = dict(
     type="CosineAnnealingLR",
@@ -127,6 +113,7 @@ data = dict(
         data_root=data_root,
         transform=[
             dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
             dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
             # dict(type="RandomRotateTargetAngle", angle=(1/2, 1, 3/2), center=[0, 0, 0], axis="z", p=0.75),
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
@@ -134,7 +121,7 @@ data = dict(
             # dict(type="RandomRotate", angle=[-1/12, 1/12], axis="y", p=0.5),
             dict(type="RandomScale", scale=[0.9, 1.1]),
             # dict(type="RandomShift", shift=[0.2, 0.2, 0.2]),
-            dict(type="RandomFlip", p=0.5),
+            # dict(type="RandomFlip", p=0.5),
             dict(type="RandomJitter", sigma=0.005, clip=0.02),
             # dict(type="ElasticDistortion", distortion_params=[[0.2, 0.4], [0.8, 1.6]]),
             dict(
@@ -147,13 +134,12 @@ data = dict(
             # dict(type="PointClip", point_cloud_range=(-35.2, -35.2, -4, 35.2, 35.2, 2)),
             # dict(type="SphereCrop", sample_rate=0.8, mode="random"),
             # dict(type="SphereCrop", point_max=120000, mode="random"),
-            # dict(type="CentroidShift", apply_z=True),
             # dict(type="StandardNormalize", apply_z=True),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "is_first", "is_last",),
-                feat_keys=("coord", "is_first", "is_last",),
+                keys=("coord", "segment","intensity","is_first","is_last",),
+                feat_keys=("coord","intensity","is_first","is_last",),
             ),
         ],
         test_mode=False,
@@ -161,10 +147,11 @@ data = dict(
     ),
     val=dict(
         type=dataset_type,
-        split="test",
+        split="val",
         data_root=data_root,
         transform=[
             dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
             dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
             # dict(type="RandomRotateTargetAngle", angle=(1/2, 1, 3/2), center=[0, 0, 0], axis="z", p=0.75),
             dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
@@ -172,7 +159,7 @@ data = dict(
             # dict(type="RandomRotate", angle=[-1/12, 1/12], axis="y", p=0.5),
             dict(type="RandomScale", scale=[0.9, 1.1]),
             # dict(type="RandomShift", shift=[0.2, 0.2, 0.2]),
-            dict(type="RandomFlip", p=0.5),
+            # dict(type="RandomFlip", p=0.5),
             dict(type="RandomJitter", sigma=0.005, clip=0.02),
             # dict(type="ElasticDistortion", distortion_params=[[0.2, 0.4], [0.8, 1.6]]),
             dict(
@@ -185,13 +172,12 @@ data = dict(
             # dict(type="PointClip", point_cloud_range=(-35.2, -35.2, -4, 35.2, 35.2, 2)),
             # dict(type="SphereCrop", sample_rate=0.8, mode="random"),
             # dict(type="SphereCrop", point_max=120000, mode="random"),
-            # dict(type="CentroidShift", apply_z=True),
             # dict(type="StandardNormalize", apply_z=True),
             dict(type="ToTensor"),
             dict(
                 type="Collect",
-                keys=("coord", "segment", "is_first", "is_last",),
-                feat_keys=("coord", "is_first", "is_last",),
+                keys=("coord", "segment","intensity","is_first","is_last",),
+                feat_keys=("coord","intensity","is_first","is_last",),
             ),
         ],
         test_mode=False,
@@ -199,10 +185,11 @@ data = dict(
     ),
     test=dict(
         type=dataset_type,
-        split="test",
+        split="val",
         data_root=data_root,
         transform=[
             dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
         ],
         test_mode=True,
         test_cfg=dict(
@@ -212,7 +199,7 @@ data = dict(
                 hash_type="fnv",
                 mode="test",
                 return_grid_coord=True,
-                max_test_loops=10
+                max_test_loops=20
             ),
             crop=None,
             post_transform=[
@@ -221,8 +208,8 @@ data = dict(
                 dict(type="ToTensor"),
                 dict(
                     type="Collect",
-                    keys=("coord", "index", "is_first", "is_last",),
-                    feat_keys=("coord", "is_first", "is_last",),
+                    keys=("coord", "index","intensity","is_first","is_last",),
+                    feat_keys=("coord","intensity","is_first","is_last",),
                 ),
             ],
             aug_transform=[

@@ -7,6 +7,7 @@ from typing import Union, List, Tuple, Optional, Dict, Any, Literal
 from sklearn.neighbors import KDTree
 from tqdm import tqdm
 from collections import defaultdict, Counter
+from numpy.lib import recfunctions as rfn
 
 class LASProcessor:
     def __init__(self,
@@ -565,14 +566,22 @@ class LASProcessor:
             header.y_offset = las_data.header.y_offset
             header.z_offset = las_data.header.z_offset
             
+            # 复制原有的 extra dimensions
+            for extra_dim in las_data.point_format.extra_dimensions:
+                dim_name = extra_dim.name[:32] if len(extra_dim.name) > 32 else extra_dim.name
+                dim_desc = (extra_dim.description if hasattr(extra_dim, 'description') else "")
+                dim_desc = dim_desc[:32] if len(dim_desc) > 32 else dim_desc
+                header.add_extra_dim(laspy.ExtraBytesParams(
+                    name=dim_name,
+                    type=extra_dim.dtype,
+                    description=dim_desc
+                ))
+            
             # Create a new LAS data with the correct point count
             new_las = laspy.LasData(header)
             
-            # Create points array with the correct size
-            new_las.points = laspy.ScaleAwarePointRecord.zeros(
-                len(segment_indices),
-                header=header
-            )
+            # 使用 numpy 数组切片直接复制点记录（最高效）
+            new_las.points.array = las_data.points.array[segment_indices]
             
             # Copy points from this segment
             for dimension in las_data.point_format.dimension_names:
@@ -620,6 +629,10 @@ class LASProcessor:
             # Save to file
             output_path = self.output_dir / f"{base_name}_segment_{i:04d}.las"
             new_las.write(output_path)
+            
+            # 保存 _origin_idx 为单独的 .npy 文件（用于 merge 时恢复原始顺序）
+            idx_path = self.output_dir / f"{base_name}_segment_{i:04d}_origin_idx.npy"
+            np.save(idx_path, segment_indices.astype(np.uint64))
 
     def save_segments_as_npy(self, las_file: Path, las_data: laspy.LasData, segments: List[np.ndarray]):
         """
@@ -768,13 +781,13 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path=r"E:\data\梯田\output3\KM35.las"
-    output_dir=r"E:\data\梯田\output3\KM35"
-    window_size=(150., 150.)
+    input_path = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\train"
+    output_dir = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile\train"
+    window_size=(200., 200.)
     min_points=4096*2
     max_points=None
     ignore_labels=[]
-    require_labels=None
+    require_labels=[2,5,6,10,11,13,15,22]
     # ignore_labels=None
     # require_labels=[2,5,6,9,11,13,15]
     label_remap=True

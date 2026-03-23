@@ -322,16 +322,24 @@ def stage3_worker_func(
                 if version.major == 1 and version.minor < 2:
                     from laspy.header import Version
                     version = Version(1, 2)
-                new_header = laspy.LasHeader(point_format=pred_las.header.point_format, version=version)
+                
+                # 使用 pred_las 的点格式（已经过推理处理，应该保留了原始格式）
+                # 确保点格式支持 GPS Time
+                point_format = pred_las.header.point_format.id
+                new_header = laspy.LasHeader(point_format=point_format, version=version)
                 new_header.offsets = pred_las.header.offsets
                 new_header.scales = pred_las.header.scales
                 
-                # Copy extra dimensions to preserve all attributes (e.g., GPS Time, custom fields)
+                # Copy extra dimensions to preserve custom fields (GPS Time is a standard dimension, not extra)
                 for extra_dim in pred_las.point_format.extra_dimensions:
+                    # Truncate name and description to 32 characters to comply with LAS spec
+                    dim_name = extra_dim.name[:32] if len(extra_dim.name) > 32 else extra_dim.name
+                    dim_desc = (extra_dim.description if hasattr(extra_dim, 'description') else "")
+                    dim_desc = dim_desc[:32] if len(dim_desc) > 32 else dim_desc
                     new_header.add_extra_dim(laspy.ExtraBytesParams(
-                        name=extra_dim.name,
+                        name=dim_name,
                         type=extra_dim.dtype,
-                        description=extra_dim.description if hasattr(extra_dim, 'description') else ""
+                        description=dim_desc
                     ))
                 
                 # Copy VLRs and CRS
@@ -351,7 +359,7 @@ def stage3_worker_func(
                     if dim in pred_las.point_format.dimension_names:
                         getattr(final_las, dim)[split:] = getattr(excl_las, dim)
                 
-                # Copy extra dimensions (e.g., GPS Time, custom fields)
+                # Copy extra dimensions (custom fields, NOT GPS Time which is standard)
                 for extra_dim in pred_las.point_format.extra_dimensions:
                     dim_name = extra_dim.name
                     if hasattr(pred_las, dim_name) and hasattr(final_las, dim_name):
@@ -592,12 +600,12 @@ def predict_las(
 
 if __name__ == "__main__":
     # 示例用法
-    INPUT_DIR = r"E:\data\铁二院\原始"
-    OUTPUT_DIR = r"E:\data\铁二院\原始_预测结果"
+    INPUT_DIR = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\val1"
+    OUTPUT_DIR = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\pred1"
 
-    CONFIG_FILE = r"ckpt\other-1207\semseg-pt-v2m5-0-base.py"
-    WEIGHT_FILE = r"ckpt\other-1207\model_best.pth"
-    LABEL_REMAP_FILE = r"ckpt\other-1207\label_mapping.json"
+    CONFIG_FILE = r"ckpt\deeplanet-test\semseg-deeplanet-v2-0.py"
+    WEIGHT_FILE = r"ckpt\deeplanet-test\model_best.pth"
+    LABEL_REMAP_FILE = r"ckpt\deeplanet-test\label_mapping.json"
     
     predict_las(
         input_dir=INPUT_DIR,
