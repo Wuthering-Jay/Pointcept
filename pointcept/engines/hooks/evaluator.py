@@ -5,6 +5,8 @@ Author: Xiaoyang Wu (xiaoyang.wu.cs@gmail.com)
 Please cite our work if the code is helpful to you.
 """
 
+import json
+import os
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -16,6 +18,360 @@ from pointcept.utils.misc import intersection_and_union_gpu
 
 from .default import HookBase
 from .builder import HOOKS
+
+
+class _StreamingStats(object):
+    def __init__(self):
+        self.count = 0
+        self.sum = 0.0
+        self.sum_sq = 0.0
+        self.min = None
+        self.max = None
+
+    def update(self, tensor):
+        if tensor.numel() == 0:
+            return
+        tensor = tensor.detach().float()
+        self.count += int(tensor.numel())
+        self.sum += float(tensor.sum().item())
+        self.sum_sq += float((tensor * tensor).sum().item())
+        tensor_min = float(tensor.min().item())
+        tensor_max = float(tensor.max().item())
+        self.min = tensor_min if self.min is None else min(self.min, tensor_min)
+        self.max = tensor_max if self.max is None else max(self.max, tensor_max)
+
+    def merge(self, other):
+        self.count += int(other["count"])
+        self.sum += float(other["sum"])
+        self.sum_sq += float(other["sum_sq"])
+        other_min = other["min"]
+        other_max = other["max"]
+        if other_min is not None:
+            self.min = other_min if self.min is None else min(self.min, other_min)
+        if other_max is not None:
+            self.max = other_max if self.max is None else max(self.max, other_max)
+
+    def to_dict(self):
+        if self.count == 0:
+            return dict(count=0, mean=None, std=None, min=None, max=None)
+        mean = self.sum / self.count
+        var = max(self.sum_sq / self.count - mean * mean, 0.0)
+        return dict(
+            count=self.count,
+            mean=mean,
+            std=var**0.5,
+            min=self.min,
+            max=self.max,
+        )
+
+    def state_dict(self):
+        return dict(
+            count=self.count,
+            sum=self.sum,
+            sum_sq=self.sum_sq,
+            min=self.min,
+            max=self.max,
+        )
+
+
+class _SemSegDiagnosticCollector(object):
+    def __init__(
+        self,
+        num_classes,
+        class_names,
+        ignore_index,
+        topk=(1, 2, 3),
+        prob_num_bins=20,
+        top_confusions=10,
+        pair_topk=5,
+    ):
+        self.num_classes = num_classes
+        self.class_names = list(class_names)
+        self.ignore_index = ignore_index
+        self.topk = sorted({int(k) for k in topk if int(k) > 0})
+        self.max_k = min(max(self.topk), self.num_classes) if self.topk else 1
+        self.prob_num_bins = int(prob_num_bins)
+        self.top_confusions = int(top_confusions)
+        self.pair_topk = int(pair_topk)
+
+        self.total_points = 0
+        self.correct_points = 0
+
+        self.confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
+        self.support = np.zeros(self.num_classes, dtype=np.int64)
+        self.predicted = np.zeros(self.num_classes, dtype=np.int64)
+        self.correct_per_class = np.zeros(self.num_classes, dtype=np.int64)
+
+        self.topk_hits = {k: 0 for k in self.topk}
+        self.topk_hits_per_class = {
+            k: np.zeros(self.num_classes, dtype=np.int64) for k in self.topk
+        }
+
+        self.mis_pred_prob_sum = np.zeros(
+            (self.num_classes, self.num_classes), dtype=np.float64
+        )
+        self.mis_gt_prob_sum = np.zeros(
+            (self.num_classes, self.num_classes), dtype=np.float64
+        )
+
+        self.correct_max_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+        self.incorrect_max_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+        self.correct_margin_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+        self.incorrect_margin_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+        self.incorrect_gt_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+
+        self.correct_top1_logit_stats = _StreamingStats()
+        self.incorrect_top1_logit_stats = _StreamingStats()
+        self.incorrect_gt_logit_stats = _StreamingStats()
+
+    def _histogram(self, values):
+        if values.numel() == 0:
+            return np.zeros(self.prob_num_bins, dtype=np.int64)
+        values = values.detach().float().clamp_(0, 1)
+        hist = torch.histc(values, bins=self.prob_num_bins, min=0, max=1)
+        return hist.cpu().numpy().astype(np.int64)
+
+    def update(self, logits, target):
+        target = target.view(-1).long()
+        logits = logits.reshape(-1, logits.shape[-1])
+        valid_mask = target != self.ignore_index
+        target = target[valid_mask]
+        logits = logits[valid_mask]
+        if target.numel() == 0:
+            return
+
+        probs = torch.softmax(logits, dim=1)
+        topk_prob, topk_idx = probs.topk(self.max_k, dim=1)
+        pred = topk_idx[:, 0]
+        max_prob = topk_prob[:, 0]
+        gt_prob = probs.gather(1, target.unsqueeze(1)).squeeze(1)
+        top1_logit, _ = logits.max(dim=1)
+        gt_logit = logits.gather(1, target.unsqueeze(1)).squeeze(1)
+
+        if self.num_classes > 1:
+            top2_prob = topk_prob[:, 1]
+        else:
+            top2_prob = torch.zeros_like(max_prob)
+        prob_margin = max_prob - top2_prob
+
+        correct_mask = pred == target
+        incorrect_mask = ~correct_mask
+
+        pair_index = target * self.num_classes + pred
+        confusion = torch.bincount(
+            pair_index, minlength=self.num_classes * self.num_classes
+        ).reshape(self.num_classes, self.num_classes)
+        confusion = confusion.cpu().numpy().astype(np.int64)
+
+        self.confusion += confusion
+        self.support += confusion.sum(axis=1)
+        self.predicted += confusion.sum(axis=0)
+        self.correct_per_class += np.diag(confusion)
+        self.total_points += int(target.numel())
+        self.correct_points += int(correct_mask.sum().item())
+
+        for k in self.topk:
+            hit_mask = (topk_idx[:, : min(k, self.max_k)] == target.unsqueeze(1)).any(dim=1)
+            self.topk_hits[k] += int(hit_mask.sum().item())
+            hit_per_class = torch.bincount(
+                target, weights=hit_mask.float(), minlength=self.num_classes
+            )
+            self.topk_hits_per_class[k] += hit_per_class.cpu().numpy().astype(np.int64)
+
+        self.correct_max_prob_hist += self._histogram(max_prob[correct_mask])
+        self.incorrect_max_prob_hist += self._histogram(max_prob[incorrect_mask])
+        self.correct_margin_prob_hist += self._histogram(prob_margin[correct_mask])
+        self.incorrect_margin_prob_hist += self._histogram(prob_margin[incorrect_mask])
+        self.incorrect_gt_prob_hist += self._histogram(gt_prob[incorrect_mask])
+
+        self.correct_top1_logit_stats.update(top1_logit[correct_mask])
+        self.incorrect_top1_logit_stats.update(top1_logit[incorrect_mask])
+        self.incorrect_gt_logit_stats.update(gt_logit[incorrect_mask])
+
+        if incorrect_mask.any():
+            mis_pair_index = pair_index[incorrect_mask]
+            mis_pred_prob_sum = torch.bincount(
+                mis_pair_index,
+                weights=max_prob[incorrect_mask],
+                minlength=self.num_classes * self.num_classes,
+            ).reshape(self.num_classes, self.num_classes)
+            mis_gt_prob_sum = torch.bincount(
+                mis_pair_index,
+                weights=gt_prob[incorrect_mask],
+                minlength=self.num_classes * self.num_classes,
+            ).reshape(self.num_classes, self.num_classes)
+            self.mis_pred_prob_sum += mis_pred_prob_sum.cpu().numpy()
+            self.mis_gt_prob_sum += mis_gt_prob_sum.cpu().numpy()
+
+    def state_dict(self):
+        return dict(
+            total_points=self.total_points,
+            correct_points=self.correct_points,
+            confusion=self.confusion,
+            support=self.support,
+            predicted=self.predicted,
+            correct_per_class=self.correct_per_class,
+            topk_hits=self.topk_hits,
+            topk_hits_per_class=self.topk_hits_per_class,
+            mis_pred_prob_sum=self.mis_pred_prob_sum,
+            mis_gt_prob_sum=self.mis_gt_prob_sum,
+            correct_max_prob_hist=self.correct_max_prob_hist,
+            incorrect_max_prob_hist=self.incorrect_max_prob_hist,
+            correct_margin_prob_hist=self.correct_margin_prob_hist,
+            incorrect_margin_prob_hist=self.incorrect_margin_prob_hist,
+            incorrect_gt_prob_hist=self.incorrect_gt_prob_hist,
+            correct_top1_logit_stats=self.correct_top1_logit_stats.state_dict(),
+            incorrect_top1_logit_stats=self.incorrect_top1_logit_stats.state_dict(),
+            incorrect_gt_logit_stats=self.incorrect_gt_logit_stats.state_dict(),
+        )
+
+    def merge_state_dict(self, state_dict):
+        self.total_points += int(state_dict["total_points"])
+        self.correct_points += int(state_dict["correct_points"])
+        self.confusion += state_dict["confusion"]
+        self.support += state_dict["support"]
+        self.predicted += state_dict["predicted"]
+        self.correct_per_class += state_dict["correct_per_class"]
+        for k in self.topk:
+            self.topk_hits[k] += int(state_dict["topk_hits"][k])
+            self.topk_hits_per_class[k] += state_dict["topk_hits_per_class"][k]
+        self.mis_pred_prob_sum += state_dict["mis_pred_prob_sum"]
+        self.mis_gt_prob_sum += state_dict["mis_gt_prob_sum"]
+        self.correct_max_prob_hist += state_dict["correct_max_prob_hist"]
+        self.incorrect_max_prob_hist += state_dict["incorrect_max_prob_hist"]
+        self.correct_margin_prob_hist += state_dict["correct_margin_prob_hist"]
+        self.incorrect_margin_prob_hist += state_dict["incorrect_margin_prob_hist"]
+        self.incorrect_gt_prob_hist += state_dict["incorrect_gt_prob_hist"]
+        self.correct_top1_logit_stats.merge(state_dict["correct_top1_logit_stats"])
+        self.incorrect_top1_logit_stats.merge(state_dict["incorrect_top1_logit_stats"])
+        self.incorrect_gt_logit_stats.merge(state_dict["incorrect_gt_logit_stats"])
+
+    def _hist_to_dict(self, hist):
+        bin_edges = np.linspace(0.0, 1.0, self.prob_num_bins + 1).tolist()
+        return dict(bin_edges=bin_edges, counts=hist.tolist())
+
+    def summarize(self):
+        total_points = self.total_points
+        error_points = total_points - self.correct_points
+        overall_acc = self.correct_points / (total_points + 1e-10)
+        topk_accuracy = {
+            str(k): self.topk_hits[k] / (total_points + 1e-10) for k in self.topk
+        }
+
+        row_sum = self.confusion.sum(axis=1, keepdims=True)
+        confusion_row_normalized = np.divide(
+            self.confusion,
+            np.maximum(row_sum, 1),
+            out=np.zeros_like(self.confusion, dtype=np.float64),
+            where=row_sum > 0,
+        )
+
+        class_summary = []
+        top_misclassifications = []
+        for class_idx in range(self.num_classes):
+            support = int(self.support[class_idx])
+            predicted = int(self.predicted[class_idx])
+            correct = int(self.correct_per_class[class_idx])
+            false_negative = support - correct
+            false_positive = predicted - correct
+            recall = correct / (support + 1e-10)
+            precision = correct / (predicted + 1e-10)
+            error_rate = false_negative / (support + 1e-10)
+
+            topk_hit_rates = {}
+            for k in self.topk:
+                topk_hit_rates[f"top{k}"] = (
+                    self.topk_hits_per_class[k][class_idx] / (support + 1e-10)
+                    if support > 0
+                    else None
+                )
+
+            wrong_row = self.confusion[class_idx].copy()
+            wrong_row[class_idx] = 0
+            mistaken = []
+            if wrong_row.sum() > 0:
+                mistake_indices = np.argsort(-wrong_row)[: self.pair_topk]
+                for pred_idx in mistake_indices:
+                    count = int(wrong_row[pred_idx])
+                    if count <= 0:
+                        continue
+                    mistaken.append(
+                        dict(
+                            pred_index=int(pred_idx),
+                            pred_name=self.class_names[pred_idx],
+                            count=count,
+                            rate_within_class=count / (support + 1e-10),
+                            mean_pred_prob=self.mis_pred_prob_sum[class_idx, pred_idx]
+                            / count,
+                            mean_gt_prob=self.mis_gt_prob_sum[class_idx, pred_idx]
+                            / count,
+                        )
+                    )
+
+            class_summary.append(
+                dict(
+                    index=class_idx,
+                    name=self.class_names[class_idx],
+                    support=support,
+                    predicted=predicted,
+                    correct=correct,
+                    false_negative=false_negative,
+                    false_positive=false_positive,
+                    recall=recall,
+                    precision=precision,
+                    error_rate=error_rate,
+                    topk_hit_rates=topk_hit_rates,
+                    top_mistaken_predictions=mistaken,
+                )
+            )
+
+        confusion_no_diag = self.confusion.copy()
+        np.fill_diagonal(confusion_no_diag, 0)
+        pair_order = np.argsort(confusion_no_diag.reshape(-1))[::-1]
+        for flat_idx in pair_order[: self.top_confusions]:
+            count = int(confusion_no_diag.reshape(-1)[flat_idx])
+            if count <= 0:
+                continue
+            gt_idx = flat_idx // self.num_classes
+            pred_idx = flat_idx % self.num_classes
+            gt_support = max(int(self.support[gt_idx]), 1)
+            top_misclassifications.append(
+                dict(
+                    gt_index=int(gt_idx),
+                    gt_name=self.class_names[gt_idx],
+                    pred_index=int(pred_idx),
+                    pred_name=self.class_names[pred_idx],
+                    count=count,
+                    rate_within_gt=count / gt_support,
+                    mean_pred_prob=self.mis_pred_prob_sum[gt_idx, pred_idx] / count,
+                    mean_gt_prob=self.mis_gt_prob_sum[gt_idx, pred_idx] / count,
+                )
+            )
+
+        return dict(
+            total_points=total_points,
+            correct_points=self.correct_points,
+            error_points=error_points,
+            overall_accuracy=overall_acc,
+            overall_error_rate=error_points / (total_points + 1e-10),
+            topk_accuracy=topk_accuracy,
+            class_summary=class_summary,
+            top_misclassifications=top_misclassifications,
+            confusion_matrix=self.confusion.tolist(),
+            confusion_matrix_row_normalized=confusion_row_normalized.tolist(),
+            distributions=dict(
+                correct_max_prob=self._hist_to_dict(self.correct_max_prob_hist),
+                incorrect_max_prob=self._hist_to_dict(self.incorrect_max_prob_hist),
+                correct_margin_prob=self._hist_to_dict(self.correct_margin_prob_hist),
+                incorrect_margin_prob=self._hist_to_dict(self.incorrect_margin_prob_hist),
+                incorrect_gt_prob=self._hist_to_dict(self.incorrect_gt_prob_hist),
+            ),
+            logit_statistics=dict(
+                correct_top1=self.correct_top1_logit_stats.to_dict(),
+                incorrect_top1=self.incorrect_top1_logit_stats.to_dict(),
+                incorrect_gt=self.incorrect_gt_logit_stats.to_dict(),
+            ),
+        )
 
 
 @HOOKS.register_module()
@@ -104,9 +460,23 @@ class ClsEvaluator(HookBase):
 
 @HOOKS.register_module()
 class SemSegEvaluator(HookBase):
-    def __init__(self, write_cls_iou=False):
+    def __init__(self, write_cls_iou=False, diagnostic=None):
         # 是否写入每个类别的IoU
         self.write_cls_iou = write_cls_iou
+        self.diagnostic = diagnostic if diagnostic is not None else dict(enable=False)
+
+    def _build_diagnostic_collector(self):
+        if not self.diagnostic or not self.diagnostic.get("enable", False):
+            return None
+        return _SemSegDiagnosticCollector(
+            num_classes=self.trainer.cfg.data.num_classes,
+            class_names=self.trainer.cfg.data.names,
+            ignore_index=self.trainer.cfg.data.ignore_index,
+            topk=self.diagnostic.get("topk", (1, 2, 3)),
+            prob_num_bins=self.diagnostic.get("prob_num_bins", 20),
+            top_confusions=self.diagnostic.get("top_confusions", 10),
+            pair_topk=self.diagnostic.get("pair_topk", 5),
+        )
 
     def after_epoch(self):
         if self.trainer.cfg.evaluate:
@@ -115,6 +485,7 @@ class SemSegEvaluator(HookBase):
     def eval(self):
         self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
         self.trainer.model.eval()
+        diagnostic_collector = self._build_diagnostic_collector()
         for i, input_dict in enumerate(self.trainer.val_loader):
             for key in input_dict.keys():
                 if isinstance(input_dict[key], torch.Tensor):
@@ -124,6 +495,7 @@ class SemSegEvaluator(HookBase):
             output = output_dict["seg_logits"]
             loss = output_dict["loss"]
             pred = output.max(1)[1]
+            diagnostic_logits = output
             segment = input_dict["segment"]
             if "origin_coord" in input_dict.keys():
                 idx, _ = pointops.knn_query(
@@ -133,8 +505,12 @@ class SemSegEvaluator(HookBase):
                     input_dict["origin_coord"].float(),
                     input_dict["origin_offset"].int(),
                 )
-                pred = pred[idx.flatten().long()]
+                idx = idx.flatten().long()
+                pred = pred[idx]
+                diagnostic_logits = output[idx]
                 segment = input_dict["origin_segment"]
+            if diagnostic_collector is not None:
+                diagnostic_collector.update(diagnostic_logits, segment)
             intersection, union, target = intersection_and_union_gpu(
                 pred,
                 segment,
@@ -176,6 +552,17 @@ class SemSegEvaluator(HookBase):
             if self.trainer.cfg.empty_cache_freq > 0:
                 if (i + 1) % self.trainer.cfg.empty_cache_freq == 0:
                     torch.cuda.empty_cache()
+
+        diagnostic_summary = None
+        if diagnostic_collector is not None:
+            comm.synchronize()
+            gathered_states = comm.gather(diagnostic_collector.state_dict(), dst=0)
+            if comm.is_main_process():
+                merged_collector = self._build_diagnostic_collector()
+                for state_dict in gathered_states:
+                    merged_collector.merge_state_dict(state_dict)
+                diagnostic_summary = merged_collector.summarize()
+
         loss_avg = self.trainer.storage.history("val_loss").avg
         intersection = self.trainer.storage.history("val_intersection").total
         union = self.trainer.storage.history("val_union").total
@@ -196,6 +583,33 @@ class SemSegEvaluator(HookBase):
                 m_iou, m_pre, m_rec, m_f1, all_acc
             )
         )
+        if diagnostic_summary is not None:
+            topk_items = [
+                "Top{} {:.4f}".format(k, diagnostic_summary["topk_accuracy"][str(k)])
+                for k in sorted(map(int, diagnostic_summary["topk_accuracy"].keys()))
+            ]
+            self.trainer.logger.info(
+                "Diagnostic: total/error/OA {}/{}/{:.4f}, {}.".format(
+                    diagnostic_summary["total_points"],
+                    diagnostic_summary["error_points"],
+                    diagnostic_summary["overall_accuracy"],
+                    ", ".join(topk_items),
+                )
+            )
+            if len(diagnostic_summary["top_misclassifications"]) > 0:
+                top_pairs = []
+                for item in diagnostic_summary["top_misclassifications"][:3]:
+                    top_pairs.append(
+                        "{}->{} {} ({:.2%})".format(
+                            item["gt_name"],
+                            item["pred_name"],
+                            item["count"],
+                            item["rate_within_gt"],
+                        )
+                    )
+                self.trainer.logger.info(
+                    "Diagnostic Top Confusions: {}.".format(" | ".join(top_pairs))
+                )
         # 计算最长的类别名称长度 & 最大的索引宽度
         max_name_length = max(len(name) for name in self.trainer.cfg.data.names)
         max_idx_width = len(str(self.trainer.cfg.data.num_classes - 1))
@@ -227,6 +641,25 @@ class SemSegEvaluator(HookBase):
                         iou_class[i],
                         current_epoch,
                     )
+        if diagnostic_summary is not None and comm.is_main_process():
+            diagnostic_summary["epoch"] = current_epoch
+            diagnostic_summary["metrics"] = dict(
+                loss=loss_avg,
+                mIoU=m_iou,
+                mPre=m_pre,
+                mRec=m_rec,
+                mF1=m_f1,
+                OA=all_acc,
+            )
+            diagnostic_path = os.path.join(
+                self.trainer.cfg.save_path,
+                "diagnostic_epoch_{:04d}.json".format(current_epoch),
+            )
+            with open(diagnostic_path, "w", encoding="utf-8") as f:
+                json.dump(diagnostic_summary, f, indent=2, ensure_ascii=False)
+            self.trainer.logger.info(
+                "Diagnostic json saved to {}".format(diagnostic_path)
+            )
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
         self.trainer.comm_info["current_metric_value"] = m_iou  # save for saver
         self.trainer.comm_info["current_metric_name"] = "mIoU"  # save for saver

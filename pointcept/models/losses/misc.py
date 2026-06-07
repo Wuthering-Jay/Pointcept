@@ -226,6 +226,121 @@ class DiceLoss(nn.Module):
 
 
 @LOSSES.register_module()
+class TverskyLoss(nn.Module):
+    def __init__(
+        self, smooth=1.0, alpha=0.3, beta=0.7, loss_weight=1.0, ignore_index=-1
+    ):
+        """Tversky Loss for multi-class segmentation."""
+        super(TverskyLoss, self).__init__()
+        self.smooth = smooth
+        self.alpha = alpha
+        self.beta = beta
+        self.loss_weight = loss_weight
+        self.ignore_index = ignore_index
+
+    def forward(self, pred, data_dict, **kwargs):
+        target = data_dict.get("segment") if "segment" in data_dict else data_dict["category"]
+        pred = pred.transpose(0, 1)
+        pred = pred.reshape(pred.size(0), -1)
+        pred = pred.transpose(0, 1).contiguous()
+        target = target.view(-1).contiguous()
+        assert pred.size(0) == target.size(
+            0
+        ), "The shape of pred doesn't match the shape of target"
+
+        valid_mask = target != self.ignore_index
+        target = target[valid_mask]
+        pred = pred[valid_mask]
+        if len(target) == 0:
+            return pred.sum() * 0.0
+
+        pred = F.softmax(pred, dim=1)
+        num_classes = pred.shape[1]
+        target = F.one_hot(
+            torch.clamp(target.long(), 0, num_classes - 1), num_classes=num_classes
+        ).type_as(pred)
+
+        total_loss = 0
+        for i in range(num_classes):
+            if i != self.ignore_index:
+                pred_i = pred[:, i]
+                target_i = target[:, i]
+                true_positive = torch.sum(pred_i * target_i)
+                false_positive = torch.sum(pred_i * (1 - target_i))
+                false_negative = torch.sum((1 - pred_i) * target_i)
+                tversky = (true_positive + self.smooth) / (
+                    true_positive
+                    + self.alpha * false_positive
+                    + self.beta * false_negative
+                    + self.smooth
+                )
+                total_loss += 1 - tversky
+        loss = total_loss / num_classes
+        return self.loss_weight * loss
+
+
+@LOSSES.register_module()
+class FocalTverskyLoss(nn.Module):
+    def __init__(
+        self,
+        smooth=1.0,
+        alpha=0.3,
+        beta=0.7,
+        gamma=0.75,
+        loss_weight=1.0,
+        ignore_index=-1,
+    ):
+        """Focal Tversky Loss for multi-class segmentation."""
+        super(FocalTverskyLoss, self).__init__()
+        self.smooth = smooth
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.loss_weight = loss_weight
+        self.ignore_index = ignore_index
+
+    def forward(self, pred, data_dict, **kwargs):
+        target = data_dict.get("segment") if "segment" in data_dict else data_dict["category"]
+        pred = pred.transpose(0, 1)
+        pred = pred.reshape(pred.size(0), -1)
+        pred = pred.transpose(0, 1).contiguous()
+        target = target.view(-1).contiguous()
+        assert pred.size(0) == target.size(
+            0
+        ), "The shape of pred doesn't match the shape of target"
+
+        valid_mask = target != self.ignore_index
+        target = target[valid_mask]
+        pred = pred[valid_mask]
+        if len(target) == 0:
+            return pred.sum() * 0.0
+
+        pred = F.softmax(pred, dim=1)
+        num_classes = pred.shape[1]
+        target = F.one_hot(
+            torch.clamp(target.long(), 0, num_classes - 1), num_classes=num_classes
+        ).type_as(pred)
+
+        total_loss = 0
+        for i in range(num_classes):
+            if i != self.ignore_index:
+                pred_i = pred[:, i]
+                target_i = target[:, i]
+                true_positive = torch.sum(pred_i * target_i)
+                false_positive = torch.sum(pred_i * (1 - target_i))
+                false_negative = torch.sum((1 - pred_i) * target_i)
+                tversky = (true_positive + self.smooth) / (
+                    true_positive
+                    + self.alpha * false_positive
+                    + self.beta * false_negative
+                    + self.smooth
+                )
+                total_loss += (1 - tversky).pow(self.gamma)
+        loss = total_loss / num_classes
+        return self.loss_weight * loss
+
+
+@LOSSES.register_module()
 class LocalConsistencyLoss(nn.Module):
     def __init__(self, k_neighbors=16, ignore_index=-1, loss_weight=1.0):
         """Local Consistency Loss for point cloud segmentation.
