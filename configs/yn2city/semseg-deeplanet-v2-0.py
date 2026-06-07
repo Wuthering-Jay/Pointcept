@@ -3,7 +3,7 @@ _base_ = ["../_base_/default_runtime.py"]
 # misc custom setting
 resume = False
 evaluate = True
-batch_size = 2  # bs: total bs in all gpus
+batch_size = 4  # bs: total bs in all gpus
 num_worker = 2
 mix_prob = 4
 empty_cache = False
@@ -18,7 +18,7 @@ grid_size = 0.75
 
 # dataset settings
 dataset_type = "LasDataset"
-data_root = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile"
+data_root = r"D:\Data\精修城区（侧立面、桥梁）\tile"
 
 ignore_index = -1
 names = [

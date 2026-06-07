@@ -781,9 +781,9 @@ def process_las_files(input_path, output_dir=None, window_size=(50.0, 50.0),
     
 if __name__ == "__main__":
     
-    input_path = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\train"
-    output_dir = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile\train"
-    window_size=(200., 200.)
+    input_path = r"D:\Data\精修城区（侧立面、桥梁）\val"
+    output_dir = r"D:\Data\精修城区（侧立面、桥梁）\tile\val"
+    window_size=(150., 150.)
     min_points=4096*2
     max_points=None
     ignore_labels=[]

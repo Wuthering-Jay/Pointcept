@@ -489,7 +489,7 @@ class LASTileProcessor:
             else:
                 remapped_label = label
             
-            self.weights[remapped_label] = (1.0 / max(frequency**(1/2), 1e-6))
+            self.weights[remapped_label] = (1.0 / max(frequency**(1/4), 1e-6))
         
         # 归一化（排除垃圾桶）
         if self.use_trash_bin:
@@ -624,17 +624,17 @@ if __name__ == "__main__":
     # )
     
     # 示例2: 垃圾桶模式（背景类标记为0）
-    input_path = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\val"
-    output_dir = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\tile\val"
+    input_path = r"E:\data\云南遥感中心\20260605"
+    output_dir = r"E:\data\云南遥感中心\20260605\tile\train"
     
     process_las_tiles(
         input_path=input_path,
         output_dir=output_dir,
         window_size=(150.0, 150.0),
-        min_points=4096*2,
+        min_points=4096*4,
         max_points=None,
         label_remap=True,  # 启用标签重映射
         label_count=True,  # 启用标签计数
         save_sample_weight=True,  # 计算样本权重
-        require_labels=[2,5,6,10,11,13,15,22],  # 前景类列表
+        require_labels=[2,5,6,10,11,13,15,21,22],  # 前景类列表
     )

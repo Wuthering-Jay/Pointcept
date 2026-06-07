@@ -20,6 +20,7 @@ from timm.layers import trunc_normal_
 
 from pointcept.models.builder import MODELS
 from pointcept.models.utils import offset2batch
+from pointcept.models.utils.spconv_utils import spconv_eval_fp32
 
 
 class PDBatchNorm(torch.nn.Module):
@@ -128,18 +129,22 @@ class BasicBlock(spconv.SparseModule):
         x, condition, context = x
         residual = x
 
-        out = self.conv1(x)
+        out = spconv_eval_fp32(self.conv1, x)
         out = out.replace_feature(self.bn1(out.features, condition, context))
         out = out.replace_feature(self.relu(out.features))
 
-        out = self.conv2(out)
+        out = spconv_eval_fp32(self.conv2, out)
         out = out.replace_feature(self.bn2(out.features, condition, context))
 
         if self.in_channels == self.embed_channels:
             residual = self.proj(residual)
         else:
             residual = residual.replace_feature(
-                self.proj_norm(self.proj_conv(residual).features, condition, context)
+                self.proj_norm(
+                    spconv_eval_fp32(self.proj_conv, residual).features,
+                    condition,
+                    context,
+                )
             )
         out = out.replace_feature(out.features + residual.features)
         out = out.replace_feature(self.relu(out.features))
@@ -170,7 +175,7 @@ class SPConvDown(nn.Module):
 
     def forward(self, x):
         x, condition, context = x
-        out = self.conv(x)
+        out = spconv_eval_fp32(self.conv, x)
         out = out.replace_feature(self.bn(out.features, condition, context))
         out = out.replace_feature(self.relu(out.features))
         return out
@@ -199,7 +204,7 @@ class SPConvUp(nn.Module):
 
     def forward(self, x):
         x, condition, context = x
-        out = self.conv(x)
+        out = spconv_eval_fp32(self.conv, x)
         out = out.replace_feature(self.bn(out.features, condition, context))
         out = out.replace_feature(self.relu(out.features))
         return out
@@ -221,7 +226,7 @@ class SPConvPatchEmbedding(nn.Module):
 
     def forward(self, x):
         x, condition, context = x
-        out = self.conv(x)
+        out = spconv_eval_fp32(self.conv, x)
         out = out.replace_feature(self.bn(out.features, condition, context))
         out = out.replace_feature(self.relu(out.features))
         return out
@@ -421,7 +426,7 @@ class SpUNetBase(nn.Module):
                 x = x.replace_feature(torch.cat((x.features, skip.features), dim=1))
                 x, _, _ = self.dec[s]([x, condition, context])
 
-        x = self.final(x)
+        x = spconv_eval_fp32(self.final, x)
         if self.cls_mode:
             x = x.replace_feature(
                 scatter(x.features, x.indices[:, 0].long(), reduce="mean", dim=0)

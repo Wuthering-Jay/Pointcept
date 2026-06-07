@@ -28,7 +28,7 @@ def extract_label_id(file_path):
 
 def extract_sample_weights(file_path):
     
-    with open(file_path, 'r') as f:
+    with open(file_path, 'r', encoding='utf-8') as f:
         weights_dict = json.load(f)
 
     weights_list = list(weights_dict.values())

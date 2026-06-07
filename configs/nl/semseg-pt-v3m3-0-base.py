@@ -1,0 +1,196 @@
+_base_ = ["../_base_/default_runtime.py"]
+
+# misc custom setting
+resume = True
+evaluate = True
+batch_size = 4  # bs: total bs in all gpus
+num_worker = 4
+mix_prob = 0
+empty_cache = False
+empty_cache_freq = 100
+empty_cache_per_epoch = True
+enable_amp = True
+enable_weighted_sampler= False
+save_path = "exp/nl/semseg-pt-v3m3-0-20260516"
+weight = "exp/nl/semseg-pt-v3m3-0-20260516/model/model_last.pth"
+# weight = None
+num_classes = 2
+grid_size = 0.25
+
+# dataset settings
+dataset_type = "LasDataset"
+data_root = r"E:\data\铁二院\第二批\优化\nl\tile50"
+
+ignore_index = -1
+names = [
+    "non-ground",
+    "ground",
+]
+
+
+# model settings
+model = dict(
+    type="DefaultSegmentorV2",
+    num_classes=num_classes,
+    backbone_out_channels=54,
+    backbone=dict(
+        type="PT-v3m3",
+        in_channels=6,
+        order=("z", "z-trans", "hilbert", "hilbert-trans"),
+        stride=(2, 2, 2),
+        enc_depths=(2, 2, 4, 2),
+        enc_channels=(54, 108, 216, 432),
+        enc_num_head=(3, 6, 12, 24),
+        enc_patch_size=(48, 48, 48, 48),
+        dec_depths=(1, 1, 1),
+        dec_channels=(54, 108, 216),
+        dec_num_head=(3, 6, 12),
+        dec_patch_size=(48, 48, 48),
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        drop_path=0.3,
+        shuffle_orders=True,
+        pre_norm=True,
+        enable_rpe=False,
+        enable_flash=False,
+        upcast_attention=False,
+        upcast_softmax=False,
+        traceable=True,
+        mask_token=False,
+        enc_mode=False,
+        freeze_encoder=False,
+        rope_base=100,
+        shift_coords=None,
+        jitter_coords=None,
+        rescale_coords=None,
+    ),
+    # fmt: off
+    criteria=[
+        dict(type="CrossEntropyLoss",
+             loss_weight=1.0,
+             weight=[1.0, 1.0],
+             ignore_index=-1),
+        # dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
+        # dict(type="FocalLoss", gamma=2.0, alpha=0.5, reduction="mean", loss_weight=1.0, ignore_index=-1),
+    ],
+)
+
+# scheduler settings
+epoch = 50
+eval_epoch = 10
+optimizer = dict(type="AdamW", lr=1e-3, weight_decay=1e-4)
+
+
+scheduler = dict(
+    type="CosineAnnealingLR",
+    total_steps=epoch,
+)
+
+
+data = dict(
+    num_classes=num_classes,
+    ignore_index=ignore_index,
+    names=names,
+    train=dict(
+        type=dataset_type,
+        split="train",
+        data_root=data_root,
+        transform=[
+            dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
+            dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
+            dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
+            dict(type="RandomScale", scale=[0.9, 1.1]),
+            dict(type="RandomJitter", sigma=0.005, clip=0.02),
+            dict(
+                type="GridSample",
+                grid_size=grid_size,
+                hash_type="fnv",
+                mode="train",
+                return_grid_coord=True,
+            ),
+            dict(type="ToTensor"),
+            dict(
+                type="Collect",
+                keys=("coord", "segment","intensity","is_first","is_last", "grid_coord"),
+                feat_keys=("coord","intensity","is_first","is_last",),
+            ),
+        ],
+        test_mode=False,
+        ignore_index=ignore_index,
+    ),
+    val=dict(
+        type=dataset_type,
+        split="val",
+        data_root=data_root,
+        transform=[
+            dict(type="Copy", keys_dict={"segment": "origin_segment"}),
+            dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
+            dict(type="RandomDropout", dropout_ratio=0.2, dropout_application_ratio=0.2),
+            dict(type="RandomRotate", angle=[-1, 1], axis="z", center=[0, 0, 0], p=0.5),
+            dict(type="RandomScale", scale=[0.9, 1.1]),
+            dict(type="RandomJitter", sigma=0.005, clip=0.02),
+            dict(
+                type="GridSample",
+                grid_size=grid_size,
+                hash_type="fnv",
+                mode="train",
+                return_grid_coord=True,
+                return_inverse=True,
+            ),
+            dict(type="ToTensor"),
+            dict(
+                type="Collect",
+                keys=("coord", "segment","intensity","is_first","is_last", "grid_coord"),
+                feat_keys=("coord","intensity","is_first","is_last",),
+            ),
+        ],
+        test_mode=False,
+        ignore_index=ignore_index,
+    ),
+    test=dict(
+        type=dataset_type,
+        split="val",
+        data_root=data_root,
+        transform=[
+            dict(type="CentroidShift", apply_z=True),
+            dict(type="RobustLogIntensity", clip_min=-3.0, clip_max=3.0),
+        ],
+        test_mode=True,
+        test_cfg=dict(
+            voxelize=dict(
+                type="GridSample_Maxloop",
+                grid_size=grid_size,
+                hash_type="fnv",
+                mode="test",
+                return_grid_coord=True,
+                max_test_loops=20
+            ),
+            crop=None,
+            post_transform=[
+                dict(type="ToTensor"),
+                dict(
+                    type="Collect",
+                    keys=("coord", "index","intensity","is_first","is_last", "grid_coord"),
+                    feat_keys=("coord","intensity","is_first","is_last",),
+                ),
+            ],
+            aug_transform=[
+                [
+                    dict(
+                        type="RandomRotateTargetAngle",
+                        angle=[0],
+                        axis="z",
+                        center=[0, 0, 0],
+                        p=1,
+                    )
+                ],
+            ],
+        ),
+        ignore_index=ignore_index,
+    ),
+)

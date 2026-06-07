@@ -18,6 +18,7 @@ from timm.layers import trunc_normal_
 
 from pointcept.models.builder import MODELS
 from pointcept.models.utils import offset2batch
+from pointcept.models.utils.spconv_utils import spconv_eval_fp32
 
 
 class BasicBlock(spconv.SparseModule):
@@ -256,23 +257,23 @@ class SpUNetBase(nn.Module):
             spatial_shape=sparse_shape,
             batch_size=batch[-1].tolist() + 1,
         )
-        x = self.conv_input(x)
+        x = spconv_eval_fp32(self.conv_input, x)
         skips = [x]
         # enc forward
         for s in range(self.num_stages):
-            x = self.down[s](x)
-            x = self.enc[s](x)
+            x = spconv_eval_fp32(self.down[s], x)
+            x = spconv_eval_fp32(self.enc[s], x)
             skips.append(x)
         x = skips.pop(-1)
         if not self.cls_mode:
             # dec forward
             for s in reversed(range(self.num_stages)):
-                x = self.up[s](x)
+                x = spconv_eval_fp32(self.up[s], x)
                 skip = skips.pop(-1)
                 x = x.replace_feature(torch.cat((x.features, skip.features), dim=1))
-                x = self.dec[s](x)
+                x = spconv_eval_fp32(self.dec[s], x)
 
-        x = self.final(x)
+        x = spconv_eval_fp32(self.final, x)
         if self.cls_mode:
             x = x.replace_feature(
                 scatter(x.features, x.indices[:, 0].long(), reduce="mean", dim=0)
@@ -444,20 +445,20 @@ class SpUNetNoSkipBase(nn.Module):
             spatial_shape=sparse_shape,
             batch_size=batch[-1].tolist() + 1,
         )
-        x = self.conv_input(x)
+        x = spconv_eval_fp32(self.conv_input, x)
         skips = [x]
         # enc forward
         for s in range(self.num_stages):
-            x = self.down[s](x)
-            x = self.enc[s](x)
+            x = spconv_eval_fp32(self.down[s], x)
+            x = spconv_eval_fp32(self.enc[s], x)
             skips.append(x)
         x = skips.pop(-1)
         # dec forward
         for s in reversed(range(self.num_stages)):
-            x = self.up[s](x)
+            x = spconv_eval_fp32(self.up[s], x)
             # skip = skips.pop(-1)
             # x = x.replace_feature(torch.cat((x.features, skip.features), dim=1))
-            x = self.dec[s](x)
+            x = spconv_eval_fp32(self.dec[s], x)
 
-        x = self.final(x)
+        x = spconv_eval_fp32(self.final, x)
         return x.features

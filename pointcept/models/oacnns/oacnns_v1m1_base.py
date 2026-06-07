@@ -5,6 +5,7 @@ import spconv.pytorch as spconv
 from timm.layers import trunc_normal_
 from ..builder import MODELS
 from ..utils import offset2batch
+from ..utils.spconv_utils import spconv_eval_fp32
 from torch_geometric.nn.pool import voxel_grid
 from torch_geometric.utils import scatter
 
@@ -105,7 +106,7 @@ class BasicBlock(nn.Module):
         feat = self.fuse(feat) + x.features
         res = feat
         x = x.replace_feature(feat)
-        x = self.voxel_block(x)
+        x = spconv_eval_fp32(self.voxel_block, x)
         x = x.replace_feature(self.act(x.features + res))
         return x
 
@@ -154,7 +155,7 @@ class DonwBlock(nn.Module):
             )
 
     def forward(self, x):
-        x = self.down(x)
+        x = spconv_eval_fp32(self.down, x)
         coord = x.indices[:, 1:].float()
         batch = x.indices[:, 0]
         clusters = []
@@ -203,7 +204,7 @@ class UpBlock(nn.Module):
         )
 
     def forward(self, x, skip_x):
-        x = self.up(x)
+        x = spconv_eval_fp32(self.up, x)
         x = x.replace_feature(
             self.fuse(torch.cat([x.features, skip_x.features], dim=1)) + x.features
         )
@@ -317,7 +318,7 @@ class OACNNs(nn.Module):
             batch_size=batch[-1].tolist() + 1,
         )
 
-        x = self.stem(x)
+        x = spconv_eval_fp32(self.stem, x)
         skips = [x]
         for i in range(self.num_stages):
             x = self.enc[i](x)
@@ -326,7 +327,7 @@ class OACNNs(nn.Module):
         for i in reversed(range(self.num_stages)):
             skip = skips.pop(-1)
             x = self.dec[i](x, skip)
-        x = self.final(x)
+        x = spconv_eval_fp32(self.final, x)
         return x.features
 
     @staticmethod

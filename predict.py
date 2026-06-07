@@ -291,6 +291,8 @@ def stage3_worker_func(
     label_remap_file: Optional[str],
     use_lac: bool,
     lac_dll_path: str,
+    use_den: bool,
+    den_dll_path: str,
     las_file_stem: str,
     las_file_path: str = None
 ):
@@ -383,16 +385,26 @@ def stage3_worker_func(
                 break
         
         if final_candidate:
-            if use_lac:
+            current_dir = final_dir
+
+            if use_lac or use_den:
                 from utils.tin import batch_lac_process
                 temp_lac = os.path.join(dirs["base"], "6_lac")
                 os.makedirs(temp_lac, exist_ok=True)
                 batch_lac_process(
-                    input_dir=final_dir, output_dir=temp_lac,
-                    use_tile=True, window_size=(500.0, 500.0), min_points=10000, dll_path=lac_dll_path
+                    input_dir=current_dir, output_dir=temp_lac,
+                    use_tile=True, window_size=(500.0, 500.0), min_points=10000,
+                    dll_path=lac_dll_path, use_den=use_den, den_dll_path=den_dll_path
                 )
                 res = [f for f in os.listdir(temp_lac) if f.endswith('.las')]
-                if res: shutil.copy2(os.path.join(temp_lac, res[0]), output_file_path)
+                if res:
+                    current_dir = temp_lac
+                else:
+                    print(f"[Post-proc] Warning: LAC/DEN processing returned no files for {las_file_stem} (possibly missing DLL). Falling back to untreated output.")
+
+            res = [f for f in os.listdir(current_dir) if f.endswith('.las')]
+            if res:
+                shutil.copy2(os.path.join(current_dir, res[0]), output_file_path)
             else:
                 shutil.copy2(final_candidate, output_file_path)
         
@@ -419,7 +431,8 @@ def predict_las(
     require_labels: Optional[List[int]] = None, ignore_labels: Optional[List[int]] = None,
     window_size: Tuple[float, float] = (200.0, 200.0), min_points: Optional[int] = 5000,
     max_points: Optional[int] = None, label_remap_file: Optional[str] = None,
-    use_lac: bool = False, lac_dll_path: str = r"libs\Release\LiDAROprationDLLEx.dll",
+    use_lac: bool = False, lac_dll_path: str = r"libs\Release\lac\LiDAROprationDLLEx.dll",
+    use_den: bool = False, den_dll_path: str = r"libs\Release\den\LiDAROprationDLLEx.dll",
     num_gpus: int = 1, recursive: bool = False, enable_amp: bool = False,
     cache_cleanup_interval: Optional[int] = None,
     worker_restart_interval: int = 10,
@@ -519,7 +532,7 @@ def predict_las(
                     if curr_out:
                         p = mp.Process(
                             target=stage3_worker_func,
-                            args=(stage3_queue, res["dirs"], curr_out, res["file_info"], label_remap_file, use_lac, lac_dll_path, stem, f_path)
+                            args=(stage3_queue, res["dirs"], curr_out, res["file_info"], label_remap_file, use_lac, lac_dll_path, use_den, den_dll_path, stem, f_path)
                         )
                         p.start()
                         active_stage3_procs.append(p)
@@ -566,7 +579,7 @@ def predict_las(
                         
                         p = mp.Process(
                             target=stage3_worker_func,
-                            args=(stage3_queue, res["dirs"], curr_out, res["file_info"], label_remap_file, use_lac, lac_dll_path, stem, f_path)
+                            args=(stage3_queue, res["dirs"], curr_out, res["file_info"], label_remap_file, use_lac, lac_dll_path, use_den, den_dll_path, stem, f_path)
                         )
                         p.start()
                         active_stage3_procs.append(p)
@@ -600,12 +613,12 @@ def predict_las(
 
 if __name__ == "__main__":
     # 示例用法
-    INPUT_DIR = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\val1"
-    OUTPUT_DIR = r"E:\data\云南遥感中心\精修城区（侧立面、桥梁）\pred1"
+    INPUT_DIR = r"E:\data\江苏点云\1800\1"
+    OUTPUT_DIR = r"E:\data\江苏点云\1800\pred"
 
-    CONFIG_FILE = r"ckpt\deeplanet-test\semseg-deeplanet-v2-0.py"
-    WEIGHT_FILE = r"ckpt\deeplanet-test\model_best.pth"
-    LABEL_REMAP_FILE = r"ckpt\deeplanet-test\label_mapping.json"
+    CONFIG_FILE = r"ckpt\yn2city-20260324\semseg-pt-v2m5-0-base.py"
+    WEIGHT_FILE = r"ckpt\yn2city-20260324\model_best.pth"
+    LABEL_REMAP_FILE = r"ckpt\yn2city-20260324\label_mapping.json"
     
     predict_las(
         input_dir=INPUT_DIR,
@@ -618,7 +631,8 @@ if __name__ == "__main__":
         min_points=5000,
         label_remap_file=LABEL_REMAP_FILE if LABEL_REMAP_FILE else None,
         use_lac=True,
-        recursive=True,
+        use_den=False,
+        recursive=False,
         enable_amp=True,
         cache_cleanup_interval=25,
         worker_restart_interval=10

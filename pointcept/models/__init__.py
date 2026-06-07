@@ -13,6 +13,7 @@ from .octformer import *
 from .oacnns import *
 from .pointnext import *
 from .deeplanet import *
+from .litept import *
 
 # from .swin3d import *
 

@@ -11,6 +11,7 @@ import numpy as np
 # ================= 配置区域 =================
 # DLL 路径 (固定值)
 DLL_PATH = r"libs\Release\LiDAROprationDLLEx.dll"
+DEN_DLL_PATH = r"libs\Release\den\LiDAROprationDLLEx.dll"
 # DLL 支持的最大 LAS 版本
 DLL_MAX_LAS_VERSION = (1, 2)
 # ===========================================
@@ -614,7 +615,8 @@ def restore_las_to_original_version_old(input_path: str, output_path: str, origi
         return False
 
 
-def batch_lac_process(
+def _batch_dll_process(
+    process_name: str,
     input_dir: str,
     output_dir: str,
     use_tile: bool = False,
@@ -627,10 +629,12 @@ def batch_lac_process(
     require_labels: Optional[List[int]] = None,
     use_trash_bin: bool = False,
     trash_bin_label: int = 0,
-    dll_path: str = DLL_PATH
+    dll_path: str = DLL_PATH,
+    use_den: bool = False,
+    den_dll_path: str = DEN_DLL_PATH
 ) -> dict:
     """
-    批量处理 LAS 文件进行 LAC 处理
+    批量处理 LAS 文件进行 DLL 处理
     
     Args:
         input_dir: 输入 LAS 文件夹路径
@@ -650,6 +654,8 @@ def batch_lac_process(
     Returns:
         处理结果统计字典，包含 success_count, fail_count, failed_files, elapsed_time
     """
+    process_name = process_name.upper()
+    process_name_lower = process_name.lower()
     result = {
         "success_count": 0,
         "fail_count": 0,
@@ -686,8 +692,9 @@ def batch_lac_process(
         from utils.las_merge import merge_las_segments
         
         # 创建临时目录存放中间文件
-        temp_tile_dir = tempfile.mkdtemp(prefix="lac_tile_")
-        temp_lac_dir = tempfile.mkdtemp(prefix="lac_result_")
+        temp_tile_dir = tempfile.mkdtemp(prefix=f"{process_name_lower}_tile_")
+        temp_lac_dir = tempfile.mkdtemp(prefix=f"{process_name_lower}_result_")
+        temp_den_dir = None
         
         try:
             # Step 1: 对输入文件进行 tile 分块
@@ -706,8 +713,8 @@ def batch_lac_process(
                 trash_bin_label=trash_bin_label
             )
             
-            # Step 2: 对 tile 后的文件进行 LAC 处理
-            print(f"\n>>> Step 2: LAC 处理...")
+            # Step 2: 对 tile 后的文件进行处理
+            print(f"\n>>> Step 2: {process_name} 处理...")
             las_files = [f for f in os.listdir(temp_tile_dir) if f.lower().endswith('.las')]
             total_files = len(las_files)
             
@@ -717,7 +724,7 @@ def batch_lac_process(
             
             print(f">>> 发现 {total_files} 个 tile 文件")
             
-            for filename in tqdm(las_files, desc="LAC 处理", unit="file"):
+            for filename in tqdm(las_files, desc=f"{process_name} 处理", unit="file"):
                 in_path = os.path.join(temp_tile_dir, filename)
                 out_path = os.path.join(temp_lac_dir, filename)
                 
@@ -779,11 +786,77 @@ def batch_lac_process(
                             os.remove(os.path.join(temp_lac_dir, f"_restored_{filename}"))
                         except:
                             pass
-            
-            # Step 3: 合并 LAC 处理后的文件
-            print(f"\n>>> Step 3: 合并结果...")
+
+            merge_input_dir = temp_lac_dir
+            if use_den:
+                temp_den_dir = tempfile.mkdtemp(prefix=f"{process_name_lower}_den_")
+                print(f"\n>>> Step 3: DEN 处理...")
+                den_files = [f for f in os.listdir(temp_lac_dir) if f.lower().endswith('.las')]
+                den_total = len(den_files)
+                if den_total == 0:
+                    print(">>> 未找到 LAC 后的 LAS 文件。")
+                else:
+                    print(f">>> 发现 {den_total} 个 LAC 文件")
+                    for filename in tqdm(den_files, desc="DEN 处理", unit="file"):
+                        in_path = os.path.join(temp_lac_dir, filename)
+                        out_path = os.path.join(temp_den_dir, filename)
+                        try:
+                            temp_converted = None
+                            las_check = laspy.read(in_path)
+                            current_version = (las_check.header.version.major, las_check.header.version.minor)
+                            del las_check
+
+                            original_info = None
+                            if current_version > DLL_MAX_LAS_VERSION:
+                                temp_converted = os.path.join(temp_lac_dir, f"_converted_den_{filename}")
+                                original_info = convert_las_to_compatible_version(in_path, temp_converted, DLL_MAX_LAS_VERSION)
+                                actual_in_path = temp_converted
+                            else:
+                                actual_in_path = in_path
+
+                            temp_dll_out = os.path.join(temp_den_dir, f"_dll_{filename}")
+                            b_in = actual_in_path.encode('gbk')
+                            b_out = temp_dll_out.encode('gbk')
+                            den_lib = ctypes.CDLL(den_dll_path)
+                            den_lib.StartProcess.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+                            den_lib.StartProcess(b_in, b_out)
+
+                            temp_restored = os.path.join(temp_den_dir, f"_restored_{filename}")
+                            restore_attributes_from_original(temp_dll_out, in_path, temp_restored)
+                            os.remove(temp_dll_out)
+
+                            if original_info and original_info.get("needs_restore", False):
+                                restore_las_to_original_version_old(temp_restored, out_path, original_info)
+                                os.remove(temp_restored)
+                            else:
+                                shutil.move(temp_restored, out_path)
+
+                            if temp_converted and os.path.exists(temp_converted):
+                                os.remove(temp_converted)
+                        except Exception as e:
+                            result["fail_count"] += 1
+                            result["failed_files"].append((filename, str(e)))
+                            if temp_converted and os.path.exists(temp_converted):
+                                try:
+                                    os.remove(temp_converted)
+                                except:
+                                    pass
+                            if os.path.exists(os.path.join(temp_den_dir, f"_dll_{filename}")):
+                                try:
+                                    os.remove(os.path.join(temp_den_dir, f"_dll_{filename}"))
+                                except:
+                                    pass
+                            if os.path.exists(os.path.join(temp_den_dir, f"_restored_{filename}")):
+                                try:
+                                    os.remove(os.path.join(temp_den_dir, f"_restored_{filename}"))
+                                except:
+                                    pass
+                merge_input_dir = temp_den_dir if den_total > 0 else temp_lac_dir
+
+            # Step 4: 合并处理后的文件
+            print(f"\n>>> Step 4: 合并结果...")
             merge_las_segments(
-                input_path=temp_lac_dir,
+                input_path=merge_input_dir,
                 output_dir=output_dir,
                 label_remap_file=None
             )
@@ -795,6 +868,8 @@ def batch_lac_process(
                 shutil.rmtree(temp_tile_dir)
             if os.path.exists(temp_lac_dir):
                 shutil.rmtree(temp_lac_dir)
+            if temp_den_dir and os.path.exists(temp_den_dir):
+                shutil.rmtree(temp_den_dir)
     else:
         # 直接处理模式
         las_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.las')]
@@ -806,7 +881,7 @@ def batch_lac_process(
 
         print(f">>> 发现 {total_files} 个文件")
 
-        for filename in tqdm(las_files, desc="LAC 处理", unit="file"):
+        for filename in tqdm(las_files, desc=f"{process_name} 处理", unit="file"):
             in_path = os.path.join(input_dir, filename)
             out_path = os.path.join(output_dir, filename)
             
@@ -879,6 +954,62 @@ def batch_lac_process(
                     except:
                         pass
 
+        if use_den:
+            den_output_dir = tempfile.mkdtemp(prefix=f"{process_name_lower}_den_")
+            try:
+                print(f"\n>>> Step 3: DEN 处理...")
+                den_files = [f for f in os.listdir(output_dir) if f.lower().endswith('.las')]
+                den_total = len(den_files)
+                if den_total == 0:
+                    print(">>> 未找到 LAC 后的 LAS 文件。")
+                else:
+                    print(f">>> 发现 {den_total} 个 LAC 文件")
+                    den_lib = ctypes.CDLL(den_dll_path)
+                    den_lib.StartProcess.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+                    for filename in tqdm(den_files, desc="DEN 处理", unit="file"):
+                        in_path = os.path.join(output_dir, filename)
+                        out_path = os.path.join(den_output_dir, filename)
+                        try:
+                            temp_converted = None
+                            las_check = laspy.read(in_path)
+                            current_version = (las_check.header.version.major, las_check.header.version.minor)
+                            del las_check
+
+                            original_info = None
+                            if current_version > DLL_MAX_LAS_VERSION:
+                                temp_converted = os.path.join(output_dir, f"_converted_den_{filename}")
+                                original_info = convert_las_to_compatible_version(in_path, temp_converted, DLL_MAX_LAS_VERSION)
+                                actual_in_path = temp_converted
+                            else:
+                                actual_in_path = in_path
+
+                            temp_dll_out = os.path.join(den_output_dir, f"_dll_{filename}")
+                            b_in = actual_in_path.encode('gbk')
+                            b_out = temp_dll_out.encode('gbk')
+                            den_lib.StartProcess(b_in, b_out)
+
+                            temp_restored = os.path.join(den_output_dir, f"_restored_{filename}")
+                            restore_attributes_from_original(temp_dll_out, in_path, temp_restored)
+                            os.remove(temp_dll_out)
+
+                            if original_info and original_info.get("needs_restore", False):
+                                restore_las_to_original_version_old(temp_restored, out_path, original_info)
+                                os.remove(temp_restored)
+                            else:
+                                shutil.move(temp_restored, out_path)
+
+                            if temp_converted and os.path.exists(temp_converted):
+                                os.remove(temp_converted)
+                        except Exception as e:
+                            result["fail_count"] += 1
+                            result["failed_files"].append((filename, str(e)))
+                for filename in os.listdir(den_output_dir):
+                    if filename.lower().endswith('.las'):
+                        shutil.copy2(os.path.join(den_output_dir, filename), os.path.join(output_dir, filename))
+            finally:
+                if os.path.exists(den_output_dir):
+                    shutil.rmtree(den_output_dir)
+
     # 结束
     result["elapsed_time"] = time.time() - start_time
     
@@ -892,6 +1023,77 @@ def batch_lac_process(
             print(f"    - {fname}: {err}")
     
     return result
+
+
+def batch_lac_process(
+    input_dir: str,
+    output_dir: str,
+    use_tile: bool = False,
+    window_size: Tuple[float, float] = (1000.0, 1000.0),
+    min_points: Optional[int] = 10000,
+    max_points: Optional[int] = None,
+    label_remap: bool = False,
+    label_count: bool = False,
+    save_sample_weight: bool = False,
+    require_labels: Optional[List[int]] = None,
+    use_trash_bin: bool = False,
+    trash_bin_label: int = 0,
+    dll_path: str = DLL_PATH,
+    use_den: bool = False,
+    den_dll_path: str = DEN_DLL_PATH
+) -> dict:
+    result = _batch_dll_process(
+        "LAC",
+        input_dir=input_dir,
+        output_dir=output_dir,
+        use_tile=use_tile,
+        window_size=window_size,
+        min_points=min_points,
+        max_points=max_points,
+        label_remap=label_remap,
+        label_count=label_count,
+        save_sample_weight=save_sample_weight,
+        require_labels=require_labels,
+        use_trash_bin=use_trash_bin,
+        trash_bin_label=trash_bin_label,
+        dll_path=dll_path,
+        use_den=use_den,
+        den_dll_path=den_dll_path,
+    )
+    return result
+
+
+def batch_den_process(
+    input_dir: str,
+    output_dir: str,
+    use_tile: bool = False,
+    window_size: Tuple[float, float] = (1000.0, 1000.0),
+    min_points: Optional[int] = 10000,
+    max_points: Optional[int] = None,
+    label_remap: bool = False,
+    label_count: bool = False,
+    save_sample_weight: bool = False,
+    require_labels: Optional[List[int]] = None,
+    use_trash_bin: bool = False,
+    trash_bin_label: int = 0,
+    dll_path: str = DEN_DLL_PATH
+) -> dict:
+    return _batch_dll_process(
+        "DEN",
+        input_dir=input_dir,
+        output_dir=output_dir,
+        use_tile=use_tile,
+        window_size=window_size,
+        min_points=min_points,
+        max_points=max_points,
+        label_remap=label_remap,
+        label_count=label_count,
+        save_sample_weight=save_sample_weight,
+        require_labels=require_labels,
+        use_trash_bin=use_trash_bin,
+        trash_bin_label=trash_bin_label,
+        dll_path=dll_path,
+    )
 
 
 if __name__ == "__main__":

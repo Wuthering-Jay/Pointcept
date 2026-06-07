@@ -272,10 +272,9 @@ def merge_las_segments(input_path: Union[str, Path],
     
 if __name__ == "__main__":
     
-    input_path = r"F:\WHU-Railways3D\urban_railway\tiles\test1"
-    output_dir = r"F:\WHU-Railways3D\urban_railway\tiles\output"
-    label_remap_file = r"F:\WHU-Railways3D\urban_railway\tiles\train\label_mapping.json"
-    
+    input_path=r"E:\data\云南遥感中心\20260605\tile\train"
+    output_dir=r"E:\data\云南遥感中心\20260605\output"
+    label_remap_file=r"E:\data\云南遥感中心\20260605\tile\train\label_mapping.json"
     merge_las_segments(
         input_path=input_path,
         output_dir=output_dir,

@@ -3,7 +3,7 @@ resume = False  # whether to resume training process
 evaluate = True  # evaluate after each epoch training process
 test_only = False  # test process
 
-seed = 42  # train process will init a random seed and record
+seed = 6  # train process will init a random seed and record
 save_path = "exp/default"
 num_worker = 0  # total worker in all gpu
 batch_size = 16  # total batch size in all gpu

@@ -10,6 +10,7 @@ except ImportError:
 
 from collections import OrderedDict
 from pointcept.models.utils.structure import Point
+from pointcept.models.utils.spconv_utils import spconv_eval_fp32
 from pointcept.engines.hooks import HookBase
 
 
@@ -84,10 +85,12 @@ class PointSequential(PointModule):
             # Spconv module
             elif spconv.modules.is_spconv_module(module):
                 if isinstance(input, Point):
-                    input.sparse_conv_feat = module(input.sparse_conv_feat)
+                    input.sparse_conv_feat = spconv_eval_fp32(
+                        module, input.sparse_conv_feat
+                    )
                     input.feat = input.sparse_conv_feat.features
                 else:
-                    input = module(input)
+                    input = spconv_eval_fp32(module, input)
             elif is_ocnn_module(module):
                 if isinstance(input, Point):
                     input.octree.features[-1] = module(
