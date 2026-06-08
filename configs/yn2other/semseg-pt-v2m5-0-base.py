@@ -10,8 +10,8 @@ empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/yn2other/semseg-pt-v2m5-0-20260607"
-# weight = "exp/yn2other/semseg-pt-v2m5-5-base/model/model_last.pth"
+save_path = "exp/yn2other/semseg-pt-v2m5-1-20260607"
+weight = "exp/yn2other/semseg-pt-v2m5-1-20260607/model/model_last.pth"
 weight = None
 num_classes = 9
 grid_size = 1.0
@@ -83,7 +83,7 @@ model = dict(
              loss_weight=1.0,
              ignore_index=-1),
         dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
-        dict(type="FlexibleTverskyLoss",classes=[5],class_alpha=[0.7],classes_beta=[0.3],skip_empty=True,loss_weight=0.1,ignore_index=-1),
+        # dict(type="FlexibleTverskyLoss",classes=[5],class_alpha=[0.7],classes_beta=[0.3],skip_empty=True,loss_weight=0.1,ignore_index=-1),
         # dict(type="FocalLoss", gamma=2.0, alpha=0.5, reduction="mean", loss_weight=1.0, ignore_index=-1),
     ],
     # fmt: on
@@ -241,7 +241,7 @@ hooks = [
             pair_topk=5,  # for each gt class, keep top-k most frequent misclassified target classes
         ),
         postprocess=dict(
-            enable=False,  # whether to compare raw prediction and postprocessed prediction during val
+            enable=True,  # whether to compare raw prediction and postprocessed prediction during val
             mode="compare",  # compare: report raw/post together; only: only report post result additionally
             transforms=[
                 # single-class rules are composed by stacking multiple transforms here
@@ -266,7 +266,7 @@ test = dict(
         type="SoftmaxSumAggregator",
     ),
     postprocess=dict(
-        enable=False,  # whether to apply postprocess on aggregated scene prediction during test
+        enable=True,  # whether to apply postprocess on aggregated scene prediction during test
         mode="only",  # only: save/evaluate post result; compare: additionally report raw result
         save_raw=False,  # whether to dump an extra raw prediction file under save_path/result
         transforms=[

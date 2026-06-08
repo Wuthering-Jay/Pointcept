@@ -68,7 +68,11 @@ class _BaseClasswisePostprocess(object):
         )
 
     def _select_fallback(self, prob, topk_idx, target_mask, fallback):
-        fallback_pred = topk_idx[:, 1].clone() if topk_idx.shape[1] > 1 else topk_idx[:, 0].clone()
+        fallback_pred = (
+            topk_idx[target_mask, 1].clone()
+            if topk_idx.shape[1] > 1
+            else topk_idx[target_mask, 0].clone()
+        )
         if fallback == "top2":
             return fallback_pred
         if fallback == "best_candidate":
