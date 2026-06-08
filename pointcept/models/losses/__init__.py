@@ -5,6 +5,7 @@ from .misc import (
     SmoothCELoss,
     DiceLoss,
     TverskyLoss,
+    FlexibleTverskyLoss,
     FocalTverskyLoss,
     FocalLoss,
     BinaryFocalLoss,

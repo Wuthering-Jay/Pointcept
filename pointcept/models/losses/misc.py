@@ -280,6 +280,240 @@ class TverskyLoss(nn.Module):
 
 
 @LOSSES.register_module()
+class FlexibleTverskyLoss(nn.Module):
+    def __init__(
+        self,
+        classes=None,
+        smooth=1e-6,
+        alpha=0.3,
+        beta=0.7,
+        class_alpha=None,
+        class_beta=None,
+        class_weight=None,
+        loss_weight=1.0,
+        ignore_index=-1,
+        skip_empty=True,
+        skip_empty_classes=None,
+        reduction="mean",
+    ):
+        """
+        Flexible Tversky Loss for multi-class point cloud segmentation.
+
+        Args:
+            classes:
+                List[int] or None.
+                If None, compute Tversky loss over all classes.
+                If list, compute only over selected class ids.
+
+            smooth:
+                Numerical smoothing term.
+
+            alpha:
+                Global FP penalty.
+
+            beta:
+                Global FN penalty.
+
+            class_alpha:
+                Optional dict or list.
+                Per-class alpha. Example:
+                    {5: 0.7, 2: 0.4}
+                or
+                    [0.3, 0.3, 0.4, ..., 0.7]
+
+            class_beta:
+                Optional dict or list.
+                Per-class beta.
+
+            class_weight:
+                Optional dict or list.
+                Per-class loss weight.
+
+            loss_weight:
+                Global weight of this loss.
+
+            ignore_index:
+                Ignore label id.
+
+            skip_empty:
+                Whether to skip classes with no positive samples in current batch.
+
+            skip_empty_classes:
+                Optional list[int] or None.
+                If None, apply skip_empty to all selected classes.
+                If list, apply skip_empty only to those classes.
+
+            reduction:
+                "mean" or "sum".
+        """
+        super().__init__()
+        self.classes = self._normalize_class_list(classes, "classes")
+        self.smooth = smooth
+        self.alpha = alpha
+        self.beta = beta
+        self.class_alpha = class_alpha
+        self.class_beta = class_beta
+        self.class_weight = class_weight
+        self.loss_weight = loss_weight
+        self.ignore_index = ignore_index
+        self.skip_empty = skip_empty
+        self.skip_empty_classes = self._normalize_class_set(
+            skip_empty_classes, "skip_empty_classes"
+        )
+        self.reduction = reduction
+
+        assert reduction in ["mean", "sum"]
+        assert self.smooth >= 0, "smooth must be non-negative"
+        assert self.alpha >= 0, "alpha must be non-negative"
+        assert self.beta >= 0, "beta must be non-negative"
+        assert self.loss_weight >= 0, "loss_weight must be non-negative"
+        self._validate_class_cfg(self.class_alpha, "class_alpha")
+        self._validate_class_cfg(self.class_beta, "class_beta")
+        self._validate_class_cfg(self.class_weight, "class_weight")
+
+    def _normalize_class_list(self, classes, name):
+        if classes is None:
+            return None
+        if isinstance(classes, int):
+            return [int(classes)]
+        if isinstance(classes, (list, tuple, set)):
+            return [int(c) for c in classes]
+        raise TypeError(f"{name} must be an int, list, tuple, set or None")
+
+    def _normalize_class_set(self, classes, name):
+        if classes is None:
+            return None
+        return set(self._normalize_class_list(classes, name))
+
+    def _validate_class_cfg(self, cfg, name):
+        if cfg is None:
+            return
+        if isinstance(cfg, dict):
+            values = cfg.values()
+        elif isinstance(cfg, (list, tuple)):
+            values = cfg
+        else:
+            raise TypeError(f"{name} must be a dict, list, tuple or None")
+        for value in values:
+            assert value >= 0, f"{name} values must be non-negative"
+
+    def _get_class_value(self, cfg, class_id, default):
+        if cfg is None:
+            return default
+
+        if isinstance(cfg, dict):
+            return cfg.get(class_id, default)
+
+        if isinstance(cfg, (list, tuple)):
+            if class_id < len(cfg):
+                return cfg[class_id]
+            return default
+
+        return default
+
+    def _flatten_pred(self, pred):
+        """
+        Supports:
+            pred shape [N, C]
+            pred shape [B, C, N]
+        """
+        if pred.dim() == 2:
+            return pred
+
+        if pred.dim() == 3:
+            pred = pred.transpose(1, 2).reshape(-1, pred.shape[1])
+            return pred.contiguous()
+
+        raise ValueError(f"Unsupported pred shape: {pred.shape}")
+
+    def forward(self, pred, data_dict, **kwargs):
+        target = data_dict.get("segment") if "segment" in data_dict else data_dict["category"]
+
+        pred = self._flatten_pred(pred)
+        target = target.view(-1).contiguous()
+
+        assert pred.size(0) == target.size(0), (
+            f"The shape of pred doesn't match target: "
+            f"pred={pred.shape}, target={target.shape}"
+        )
+
+        valid_mask = target != self.ignore_index
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+
+        if target.numel() == 0:
+            return pred.sum() * 0.0
+
+        prob = F.softmax(pred, dim=1)
+        num_classes = prob.shape[1]
+
+        if self.classes is None:
+            classes = list(range(num_classes))
+        else:
+            classes = []
+            for c in self.classes:
+                c = int(c)
+                if not 0 <= c < num_classes:
+                    raise ValueError(
+                        f"Class id {c} is out of valid range [0, {num_classes - 1}]"
+                    )
+                classes.append(c)
+        if len(classes) == 0:
+            raise ValueError("No valid classes selected for FlexibleTverskyLoss")
+
+        target_onehot = F.one_hot(
+            torch.clamp(target.long(), 0, num_classes - 1),
+            num_classes=num_classes,
+        ).type_as(prob)
+
+        losses = []
+        weights = []
+
+        for c in classes:
+            prob_c = prob[:, c]
+            target_c = target_onehot[:, c]
+
+            has_positive = target_c.sum() > 0
+
+            if self.skip_empty:
+                if self.skip_empty_classes is None:
+                    if not has_positive:
+                        continue
+                else:
+                    if c in self.skip_empty_classes and not has_positive:
+                        continue
+
+            tp = torch.sum(prob_c * target_c)
+            fp = torch.sum(prob_c * (1.0 - target_c))
+            fn = torch.sum((1.0 - prob_c) * target_c)
+
+            alpha_c = self._get_class_value(self.class_alpha, c, self.alpha)
+            beta_c = self._get_class_value(self.class_beta, c, self.beta)
+            weight_c = self._get_class_value(self.class_weight, c, 1.0)
+
+            tversky = (tp + self.smooth) / (
+                tp + alpha_c * fp + beta_c * fn + self.smooth
+            )
+
+            loss_c = (1.0 - tversky) * weight_c
+            losses.append(loss_c)
+            weights.append(float(weight_c))
+
+        if len(losses) == 0:
+            return pred.sum() * 0.0
+
+        losses = torch.stack(losses)
+
+        if self.reduction == "sum":
+            loss = losses.sum()
+        else:
+            # Weighted mean over active classes.
+            loss = losses.sum() / (sum(weights) + 1e-12)
+
+        return self.loss_weight * loss
+
+
+@LOSSES.register_module()
 class FocalTverskyLoss(nn.Module):
     def __init__(
         self,

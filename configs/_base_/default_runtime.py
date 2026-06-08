@@ -31,16 +31,7 @@ hooks = [
     dict(type="ModelHook"),
     dict(type="IterationTimer", warmup_iter=2),
     dict(type="InformationWriter", interval=10),
-    dict(
-        type="SemSegEvaluator",
-        diagnostic=dict(
-            enable=False,  # whether to enable whole-val diagnostic and dump diagnostic_epoch_xxxx.json
-            topk=(1, 2, 3),  # top-k hit rates to compute on the whole validation set
-            prob_num_bins=20,  # number of histogram bins for max-prob / gt-prob / margin distributions
-            top_confusions=10,  # number of global gt->pred confusion pairs to keep in the json summary
-            pair_topk=5,  # for each gt class, keep top-k most frequent misclassified target classes
-        ),
-    ),
+    dict(type="SemSegEvaluator"),
     dict(type="CheckpointSaver", save_freq=None),
     dict(type="PreciseEvaluator", test_last=False),
     dict(type="CacheCleaner", time_multiplier=5,step_clean_interval=200),
@@ -50,4 +41,4 @@ hooks = [
 train = dict(type="DefaultTrainer")
 
 # Tester
-test = dict(type="SemSegTester", verbose=True)
+test = dict(type="SemSegTester",verbose=True)

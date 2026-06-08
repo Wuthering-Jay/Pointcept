@@ -1,6 +1,7 @@
 from .builder import build_model
 from .default import DefaultSegmentor, DefaultClassifier
 from .modules import PointModule, PointModel
+from .postprocess import build_postprocess, build_prediction_aggregator, build_prediction_dict
 
 # Backbones
 from .sparse_unet import *

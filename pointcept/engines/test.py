@@ -25,6 +25,7 @@ from .defaults import create_ddp_model
 import pointcept.utils.comm as comm
 from pointcept.datasets import build_dataset, collate_fn
 from pointcept.models import build_model
+from pointcept.models.postprocess import build_postprocess, build_prediction_aggregator
 from pointcept.utils.logger import get_root_logger
 from pointcept.utils.registry import Registry
 from pointcept.utils.misc import (
@@ -126,6 +127,91 @@ class TesterBase:
 
 @TESTERS.register_module()
 class SemSegTester(TesterBase):
+    def _build_postprocess(self):
+        postprocess_cfg = getattr(self.cfg.test, "postprocess", None)
+        if postprocess_cfg is None or not postprocess_cfg.get("enable", False):
+            return None, None
+        postprocess = build_postprocess(
+            cfg=postprocess_cfg,
+            class_names=self.cfg.data.names,
+            ignore_index=self.cfg.data.ignore_index,
+        )
+        return postprocess, postprocess_cfg
+
+    def _build_aggregator(self):
+        aggregator_cfg = getattr(self.cfg.test, "aggregator", None)
+        return build_prediction_aggregator(
+            cfg=aggregator_cfg,
+            class_names=self.cfg.data.names,
+            ignore_index=self.cfg.data.ignore_index,
+        )
+
+    def _summarize_metrics(self, intersection, union, target):
+        iou_class = intersection / (union + 1e-10)
+        rec_class = intersection / (target + 1e-10)
+        pre_class = intersection / (union + intersection - target + 1e-10)
+        f1_class = 2 * (pre_class * rec_class) / (pre_class + rec_class + 1e-10)
+        return dict(
+            iou_class=iou_class,
+            rec_class=rec_class,
+            pre_class=pre_class,
+            f1_class=f1_class,
+            m_iou=np.mean(iou_class),
+            m_rec=np.mean(rec_class),
+            m_pre=np.mean(pre_class),
+            m_f1=np.mean(f1_class),
+            all_acc=sum(intersection) / (sum(target) + 1e-10),
+        )
+
+    def _log_metric_summary(self, prefix, metrics):
+        logger = get_root_logger()
+        logger.info(
+            "{} result: mIoU/mPre/mRec/mF1/OA {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}.".format(
+                prefix,
+                metrics["m_iou"],
+                metrics["m_pre"],
+                metrics["m_rec"],
+                metrics["m_f1"],
+                metrics["all_acc"],
+            )
+        )
+        max_name_length = max(len(name) for name in self.cfg.data.names)
+        max_idx_width = len(str(self.cfg.data.num_classes - 1))
+        for i in range(self.cfg.data.num_classes):
+            logger.info(
+                "{} Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
+                    prefix,
+                    idx=i,
+                    name=self.cfg.data.names[i],
+                    iou=metrics["iou_class"][i],
+                    pre=metrics["pre_class"][i],
+                    rec=metrics["rec_class"][i],
+                    f1=metrics["f1_class"][i],
+                    idx_width=max_idx_width,
+                    name_width=max_name_length,
+                )
+            )
+
+    def _map_prediction_to_origin(self, pred_dict, data_dict):
+        if "origin_segment" not in data_dict.keys():
+            return pred_dict, data_dict["segment"]
+        assert "inverse" in data_dict.keys()
+        inverse = data_dict["inverse"]
+        if not isinstance(inverse, torch.Tensor):
+            inverse = torch.as_tensor(inverse, device=pred_dict["seg_logits"].device)
+        inverse = inverse.long()
+        mapped_prob = pred_dict["prob"][inverse]
+        mapped_dict = dict(
+            seg_logits=pred_dict["seg_logits"][inverse],
+            prob=mapped_prob,
+            pred=mapped_prob.max(dim=1)[1],
+            coord=data_dict.get("origin_coord", data_dict.get("coord")),
+            offset=data_dict.get("origin_offset", data_dict.get("offset")),
+            segment=data_dict["origin_segment"],
+            name=data_dict.get("name"),
+        )
+        return mapped_dict, data_dict["origin_segment"]
+
     def test(self):
         assert self.test_loader.batch_size == 1
         logger = get_root_logger()
@@ -136,8 +222,18 @@ class SemSegTester(TesterBase):
         union_meter = AverageMeter()
         target_meter = AverageMeter()
         self.model.eval()
+        aggregator = self._build_aggregator()
+        postprocess, postprocess_cfg = self._build_postprocess()
+        postprocess_mode = (
+            postprocess_cfg.get("mode", "only") if postprocess_cfg is not None else "only"
+        )
+        compare_post = postprocess is not None and postprocess_mode == "compare"
+        save_raw = (
+            postprocess_cfg.get("save_raw", False) if postprocess_cfg is not None else False
+        )
 
         save_path = os.path.join(self.cfg.save_path, "result")
+        make_dirs(save_path)
         # make_dirs(save_path)
         # create submit folder only on main process
         # if (
@@ -170,6 +266,7 @@ class SemSegTester(TesterBase):
         #         json.dump(submission, f, indent=4)
         comm.synchronize()
         record = {}
+        record_raw = {} if compare_post else None
         # fragment inference
         for idx, data_dict in enumerate(self.test_loader):
             end = time.time()
@@ -177,6 +274,7 @@ class SemSegTester(TesterBase):
             fragment_list = data_dict.pop("fragment_list")
             segment = data_dict.pop("segment")
             data_name = data_dict.pop("name")
+            data_dict["name"] = data_name
             print(f"Rank {comm.get_rank()}, Data {data_name}")
             # pred_save_path = os.path.join(save_path, "{}_pred.npy".format(data_name))
             # if os.path.isfile(pred_save_path):
@@ -189,7 +287,7 @@ class SemSegTester(TesterBase):
             #     if "origin_segment" in data_dict.keys():
             #         segment = data_dict["origin_segment"]
             # else:
-            pred = torch.zeros((segment.size, self.cfg.data.num_classes)).cuda()
+            aggregator.reset(segment.size, self.cfg.data.num_classes, torch.device("cuda"))
             
             # Setup AMP autocast
             enable_amp = getattr(self.cfg, 'enable_amp', False)
@@ -212,12 +310,11 @@ class SemSegTester(TesterBase):
                 with torch.no_grad():
                     with auto_cast(enabled=enable_amp, dtype=AMP_DTYPE.get(amp_dtype, torch.float16)):
                         pred_part = self.model(input_dict)["seg_logits"]  # (n, k)
-                        pred_part = F.softmax(pred_part, -1)
                     if self.cfg.empty_cache:
                         torch.cuda.empty_cache()
                     bs = 0
                     for be in input_dict["offset"]:
-                        pred[idx_part[bs:be], :] += pred_part[bs:be]
+                        aggregator.update(idx_part[bs:be], pred_part[bs:be])
                         bs = be
 
                 logger.info(
@@ -229,14 +326,32 @@ class SemSegTester(TesterBase):
                         batch_num=len(fragment_list),
                     )
                 )
-            if self.cfg.data.test.type == "ScanNetPPDataset":
-                pred = pred.topk(3, dim=1)[1].data.cpu().numpy()
+            raw_pred_dict = aggregator.finalize(
+                data_dict=dict(
+                    coord=data_dict.get("coord"),
+                    offset=data_dict.get("offset"),
+                    segment=segment,
+                    name=data_name,
+                )
+            )
+            raw_pred_dict, segment = self._map_prediction_to_origin(raw_pred_dict, data_dict)
+            if postprocess is not None:
+                post_pred_dict = postprocess(raw_pred_dict)
+                final_pred_dict = post_pred_dict
             else:
-                pred = pred.max(1)[1].data.cpu().numpy()
-            if "origin_segment" in data_dict.keys():
-                assert "inverse" in data_dict.keys()
-                pred = pred[data_dict["inverse"]]
-                segment = data_dict["origin_segment"]
+                post_pred_dict = None
+                final_pred_dict = raw_pred_dict
+
+            raw_pred = raw_pred_dict["pred"].data.cpu().numpy()
+            pred = final_pred_dict["pred"].data.cpu().numpy()
+            if self.cfg.data.test.type == "ScanNetPPDataset":
+                raw_pred_top3 = raw_pred_dict["prob"].topk(3, dim=1)[1].data.cpu().numpy()
+                pred_top3 = final_pred_dict["prob"].topk(3, dim=1)[1].data.cpu().numpy()
+                pred_top3[:, 0] = pred
+                if postprocess is not None:
+                    pred = pred_top3
+                else:
+                    pred = raw_pred_top3
                 
              # Save prediction based on dataset type
             if hasattr(self.cfg, "dataset_type") and self.cfg.dataset_type == "LasDataset":
@@ -252,7 +367,7 @@ class SemSegTester(TesterBase):
                         las = laspy.read(las_path)
                         
                         # Update the classification field with predictions
-                        las.classification = pred.astype(np.uint8)
+                        las.classification = np.asarray(pred).astype(np.uint8)
                         
                         # Save the updated LAS file
                         pred_save_path = las_path
@@ -274,6 +389,8 @@ class SemSegTester(TesterBase):
                 # Default behavior - save as NPY
                 pred_save_path = os.path.join(self.cfg.data_root, self.cfg.data.test.split, str(data_name), "pred.npy")
                 np.save(pred_save_path, pred)
+            if save_raw:
+                np.save(os.path.join(save_path, f"{data_name}_pred_raw.npy"), raw_pred)
             # if (
             #     self.cfg.data.test.type == "ScanNetDataset"
             #     or self.cfg.data.test.type == "ScanNet200Dataset"
@@ -325,8 +442,14 @@ class SemSegTester(TesterBase):
             #         )
             #     )
 
+            pred_eval = pred[:, 0] if self.cfg.data.test.type == "ScanNetPPDataset" else pred
+            raw_pred_eval = (
+                raw_pred_top3[:, 0]
+                if self.cfg.data.test.type == "ScanNetPPDataset"
+                else raw_pred
+            )
             intersection, union, target = intersection_and_union(
-                pred, segment, self.cfg.data.num_classes, self.cfg.data.ignore_index
+                pred_eval, segment, self.cfg.data.num_classes, self.cfg.data.ignore_index
             )
             intersection_meter.update(intersection)
             union_meter.update(union)
@@ -334,6 +457,24 @@ class SemSegTester(TesterBase):
             record[data_name] = dict(
                 intersection=intersection, union=union, target=target
             )
+            raw_acc = None
+            raw_iou = None
+            if compare_post:
+                raw_intersection, raw_union, raw_target = intersection_and_union(
+                    raw_pred_eval,
+                    segment,
+                    self.cfg.data.num_classes,
+                    self.cfg.data.ignore_index,
+                )
+                record_raw[data_name] = dict(
+                    intersection=raw_intersection,
+                    union=raw_union,
+                    target=raw_target,
+                )
+                raw_mask = raw_union != 0
+                raw_iou_class = raw_intersection / (raw_union + 1e-10)
+                raw_iou = np.mean(raw_iou_class[raw_mask])
+                raw_acc = sum(raw_intersection) / (sum(raw_target) + 1e-10)
 
             mask = union != 0
             iou_class = intersection / (union + 1e-10)
@@ -344,22 +485,25 @@ class SemSegTester(TesterBase):
             m_acc = np.mean(intersection_meter.sum / (target_meter.sum + 1e-10))
 
             batch_time.update(time.time() - end)
-            logger.info(
+            log_message = (
                 "Test: {} [{}/{}]-{} "
                 "Batch {batch_time.val:.3f} ({batch_time.avg:.3f}) "
                 "Accuracy {acc:.4f} ({m_acc:.4f}) "
-                "mIoU {iou:.4f} ({m_iou:.4f})".format(
-                    data_name,
-                    idx + 1,
-                    len(self.test_loader),
-                    segment.size,
-                    batch_time=batch_time,
-                    acc=acc,
-                    m_acc=m_acc,
-                    iou=iou,
-                    m_iou=m_iou,
-                )
+                "mIoU {iou:.4f} ({m_iou:.4f})"
+            ).format(
+                data_name,
+                idx + 1,
+                len(self.test_loader),
+                segment.size,
+                batch_time=batch_time,
+                acc=acc,
+                m_acc=m_acc,
+                iou=iou,
+                m_iou=m_iou,
             )
+            if raw_acc is not None and raw_iou is not None:
+                log_message += " RawAcc {:.4f} RawmIoU {:.4f}".format(raw_acc, raw_iou)
+            logger.info(log_message)
             
             # 定期清理 CUDA 缓存
             cache_cleanup_interval = getattr(self.cfg, 'cache_cleanup_interval', None)
@@ -375,6 +519,7 @@ class SemSegTester(TesterBase):
         logger.info("Syncing ...")
         comm.synchronize()
         record_sync = comm.gather(record, dst=0)
+        record_raw_sync = comm.gather(record_raw, dst=0) if compare_post else None
 
         if comm.is_main_process():
             record = {}
@@ -394,44 +539,27 @@ class SemSegTester(TesterBase):
                     os.path.join(save_path, f"{self.test_loader.dataset.split}.pth"),
                 )
 
-            # iou_class = intersection / (union + 1e-10)
-            # accuracy_class = intersection / (target + 1e-10)
-            # mIoU = np.mean(iou_class)
-            # mAcc = np.mean(accuracy_class)
-            # allAcc = sum(intersection) / (sum(target) + 1e-10)
-            
-            iou_class = intersection / (union + 1e-10)
-            # accuracy_class = intersection / (target + 1e-10)
-            rec_class = intersection / (target + 1e-10)
-            pre_class = intersection / (union+intersection-target + 1e-10)
-            f1_class = 2 * (pre_class * rec_class) / (pre_class + rec_class + 1e-10)
-            m_iou = np.mean(iou_class)
-            # m_acc = np.mean(acc_class)
-            m_rec = np.mean(rec_class)
-            m_pre = np.mean(pre_class)
-            m_f1 = np.mean(f1_class)
-            all_acc = sum(intersection) / (sum(target) + 1e-10)
-
-            logger.info(
-                "Val result: mIoU/mPre/mRec/mF1/OA {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}.".format(
-                    m_iou, m_pre, m_rec, m_f1, all_acc
+            post_metrics = self._summarize_metrics(intersection, union, target)
+            self._log_metric_summary("Post Test" if postprocess is not None else "Test", post_metrics)
+            if compare_post:
+                record_raw = {}
+                for _ in range(len(record_raw_sync)):
+                    r = record_raw_sync.pop()
+                    record_raw.update(r)
+                    del r
+                raw_intersection = np.sum(
+                    [meters["intersection"] for _, meters in record_raw.items()], axis=0
                 )
-            )
-            max_name_length = max(len(name) for name in self.cfg.data.names)
-            max_idx_width = len(str(self.cfg.data.num_classes - 1))
-            for i in range(self.cfg.data.num_classes):
-                logger.info(
-                    "Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
-                        idx=i,
-                        name=self.cfg.data.names[i],
-                        iou=iou_class[i],
-                        pre=pre_class[i],
-                        rec=rec_class[i],
-                        f1=f1_class[i],
-                        idx_width=max_idx_width,
-                        name_width=max_name_length
-                    )
+                raw_union = np.sum(
+                    [meters["union"] for _, meters in record_raw.items()], axis=0
                 )
+                raw_target = np.sum(
+                    [meters["target"] for _, meters in record_raw.items()], axis=0
+                )
+                raw_metrics = self._summarize_metrics(
+                    raw_intersection, raw_union, raw_target
+                )
+                self._log_metric_summary("Raw Test", raw_metrics)
             if self.cfg.empty_cache_per_epoch:
                 torch.cuda.empty_cache()
             logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")

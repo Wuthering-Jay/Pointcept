@@ -83,6 +83,7 @@ model = dict(
              loss_weight=1.0,
              ignore_index=-1),
         dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
+        dict(type="FlexibleTverskyLoss",classes=[5],class_alpha=[0.7],classes_beta=[0.3],skip_empty=True,loss_weight=0.1,ignore_index=-1),
         # dict(type="FocalLoss", gamma=2.0, alpha=0.5, reduction="mean", loss_weight=1.0, ignore_index=-1),
     ],
     # fmt: on
@@ -221,5 +222,55 @@ data = dict(
             ],
         ),
         ignore_index=ignore_index,
+    ),
+)
+
+# hook
+hooks = [
+    dict(type="CheckpointLoader"),
+    dict(type="ModelHook"),
+    dict(type="IterationTimer", warmup_iter=2),
+    dict(type="InformationWriter", interval=10),
+    dict(
+        type="SemSegEvaluator",
+        diagnostic=dict(
+            enable=True,  # whether to enable whole-val diagnostic and dump diagnostic_epoch_xxxx.json
+            topk=(1, 2, 3),  # top-k hit rates to compute on the whole validation set
+            prob_num_bins=20,  # number of histogram bins for max-prob / gt-prob / margin distributions
+            top_confusions=10,  # number of global gt->pred confusion pairs to keep in the json summary
+            pair_topk=5,  # for each gt class, keep top-k most frequent misclassified target classes
+        ),
+        postprocess=dict(
+            enable=False,  # whether to compare raw prediction and postprocessed prediction during val
+            mode="compare",  # compare: report raw/post together; only: only report post result additionally
+            transforms=[
+                # single-class rules are composed by stacking multiple transforms here
+                dict(type="ConfidenceFallback", class_name="vehicle", min_prob=0.45, fallback="top2"),
+                # dict(type="MarginFallback", class_name="vehicle", max_margin=0.05, fallback="top2"),
+            ],
+        ),
+    ),
+    dict(type="CheckpointSaver", save_freq=None),
+    dict(type="PreciseEvaluator", test_last=False),
+    dict(type="CacheCleaner", time_multiplier=5,step_clean_interval=200),
+]
+
+# Trainer
+train = dict(type="DefaultTrainer")
+
+# Tester
+test = dict(
+    type="SemSegTester",
+    verbose=True,
+    aggregator=dict(
+        type="SoftmaxSumAggregator",
+    ),
+    postprocess=dict(
+        enable=False,  # whether to apply postprocess on aggregated scene prediction during test
+        mode="only",  # only: save/evaluate post result; compare: additionally report raw result
+        save_raw=False,  # whether to dump an extra raw prediction file under save_path/result
+        transforms=[
+            dict(type="ConfidenceFallback", class_name="vehicle", min_prob=0.45, fallback="top2"),
+        ],
     ),
 )

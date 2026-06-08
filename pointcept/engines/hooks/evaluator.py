@@ -14,6 +14,7 @@ import pointops
 from uuid import uuid4
 
 import pointcept.utils.comm as comm
+from pointcept.models.postprocess import build_postprocess, build_prediction_dict
 from pointcept.utils.misc import intersection_and_union_gpu
 
 from .default import HookBase
@@ -119,6 +120,12 @@ class _SemSegDiagnosticCollector(object):
         self.correct_margin_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
         self.incorrect_margin_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
         self.incorrect_gt_prob_hist = np.zeros(self.prob_num_bins, dtype=np.int64)
+        self.pred_tp_max_prob_hist = np.zeros(
+            (self.num_classes, self.prob_num_bins), dtype=np.int64
+        )
+        self.pred_fp_max_prob_hist = np.zeros(
+            (self.num_classes, self.prob_num_bins), dtype=np.int64
+        )
 
         self.correct_top1_logit_stats = _StreamingStats()
         self.incorrect_top1_logit_stats = _StreamingStats()
@@ -129,6 +136,19 @@ class _SemSegDiagnosticCollector(object):
             return np.zeros(self.prob_num_bins, dtype=np.int64)
         values = values.detach().float().clamp_(0, 1)
         hist = torch.histc(values, bins=self.prob_num_bins, min=0, max=1)
+        return hist.cpu().numpy().astype(np.int64)
+
+    def _classwise_histogram(self, class_index, values):
+        if class_index.numel() == 0:
+            return np.zeros((self.num_classes, self.prob_num_bins), dtype=np.int64)
+        values = values.detach().float().clamp_(0, 1)
+        bin_index = torch.clamp(
+            (values * self.prob_num_bins).long(), max=self.prob_num_bins - 1
+        )
+        flat_index = class_index.long() * self.prob_num_bins + bin_index
+        hist = torch.bincount(
+            flat_index, minlength=self.num_classes * self.prob_num_bins
+        ).reshape(self.num_classes, self.prob_num_bins)
         return hist.cpu().numpy().astype(np.int64)
 
     def update(self, logits, target):
@@ -183,6 +203,12 @@ class _SemSegDiagnosticCollector(object):
         self.correct_margin_prob_hist += self._histogram(prob_margin[correct_mask])
         self.incorrect_margin_prob_hist += self._histogram(prob_margin[incorrect_mask])
         self.incorrect_gt_prob_hist += self._histogram(gt_prob[incorrect_mask])
+        self.pred_tp_max_prob_hist += self._classwise_histogram(
+            pred[correct_mask], max_prob[correct_mask]
+        )
+        self.pred_fp_max_prob_hist += self._classwise_histogram(
+            pred[incorrect_mask], max_prob[incorrect_mask]
+        )
 
         self.correct_top1_logit_stats.update(top1_logit[correct_mask])
         self.incorrect_top1_logit_stats.update(top1_logit[incorrect_mask])
@@ -220,6 +246,8 @@ class _SemSegDiagnosticCollector(object):
             correct_margin_prob_hist=self.correct_margin_prob_hist,
             incorrect_margin_prob_hist=self.incorrect_margin_prob_hist,
             incorrect_gt_prob_hist=self.incorrect_gt_prob_hist,
+            pred_tp_max_prob_hist=self.pred_tp_max_prob_hist,
+            pred_fp_max_prob_hist=self.pred_fp_max_prob_hist,
             correct_top1_logit_stats=self.correct_top1_logit_stats.state_dict(),
             incorrect_top1_logit_stats=self.incorrect_top1_logit_stats.state_dict(),
             incorrect_gt_logit_stats=self.incorrect_gt_logit_stats.state_dict(),
@@ -242,6 +270,8 @@ class _SemSegDiagnosticCollector(object):
         self.correct_margin_prob_hist += state_dict["correct_margin_prob_hist"]
         self.incorrect_margin_prob_hist += state_dict["incorrect_margin_prob_hist"]
         self.incorrect_gt_prob_hist += state_dict["incorrect_gt_prob_hist"]
+        self.pred_tp_max_prob_hist += state_dict["pred_tp_max_prob_hist"]
+        self.pred_fp_max_prob_hist += state_dict["pred_fp_max_prob_hist"]
         self.correct_top1_logit_stats.merge(state_dict["correct_top1_logit_stats"])
         self.incorrect_top1_logit_stats.merge(state_dict["incorrect_top1_logit_stats"])
         self.incorrect_gt_logit_stats.merge(state_dict["incorrect_gt_logit_stats"])
@@ -348,6 +378,34 @@ class _SemSegDiagnosticCollector(object):
                 )
             )
 
+        false_positive_sources = {}
+        predicted_class_probability_histograms = {}
+        for pred_idx in range(self.num_classes):
+            pred_name = self.class_names[pred_idx]
+            fp_count = int(self.predicted[pred_idx] - self.correct_per_class[pred_idx])
+            fp_sources = []
+            if fp_count > 0:
+                fp_column = self.confusion[:, pred_idx].copy()
+                fp_column[pred_idx] = 0
+                source_indices = np.argsort(-fp_column)[: self.pair_topk]
+                for gt_idx in source_indices:
+                    count = int(fp_column[gt_idx])
+                    if count <= 0:
+                        continue
+                    fp_sources.append(
+                        dict(
+                            gt_index=int(gt_idx),
+                            gt_name=self.class_names[gt_idx],
+                            count=count,
+                            ratio_in_fp=count / (fp_count + 1e-10),
+                        )
+                    )
+            false_positive_sources[pred_name] = fp_sources
+            predicted_class_probability_histograms[pred_name] = dict(
+                tp_max_prob=self._hist_to_dict(self.pred_tp_max_prob_hist[pred_idx]),
+                fp_max_prob=self._hist_to_dict(self.pred_fp_max_prob_hist[pred_idx]),
+            )
+
         return dict(
             total_points=total_points,
             correct_points=self.correct_points,
@@ -357,6 +415,8 @@ class _SemSegDiagnosticCollector(object):
             topk_accuracy=topk_accuracy,
             class_summary=class_summary,
             top_misclassifications=top_misclassifications,
+            false_positive_sources=false_positive_sources,
+            predicted_class_probability_histograms=predicted_class_probability_histograms,
             confusion_matrix=self.confusion.tolist(),
             confusion_matrix_row_normalized=confusion_row_normalized.tolist(),
             distributions=dict(
@@ -460,10 +520,11 @@ class ClsEvaluator(HookBase):
 
 @HOOKS.register_module()
 class SemSegEvaluator(HookBase):
-    def __init__(self, write_cls_iou=False, diagnostic=None):
+    def __init__(self, write_cls_iou=False, diagnostic=None, postprocess=None):
         # 是否写入每个类别的IoU
         self.write_cls_iou = write_cls_iou
         self.diagnostic = diagnostic if diagnostic is not None else dict(enable=False)
+        self.postprocess = postprocess if postprocess is not None else dict(enable=False)
 
     def _build_diagnostic_collector(self):
         if not self.diagnostic or not self.diagnostic.get("enable", False):
@@ -478,6 +539,77 @@ class SemSegEvaluator(HookBase):
             pair_topk=self.diagnostic.get("pair_topk", 5),
         )
 
+    def _build_postprocess(self):
+        if not self.postprocess or not self.postprocess.get("enable", False):
+            return None
+        return build_postprocess(
+            cfg=self.postprocess,
+            class_names=self.trainer.cfg.data.names,
+            ignore_index=self.trainer.cfg.data.ignore_index,
+        )
+
+    def _reduce_intersection_and_union(self, pred, segment):
+        intersection, union, target = intersection_and_union_gpu(
+            pred,
+            segment,
+            self.trainer.cfg.data.num_classes,
+            self.trainer.cfg.data.ignore_index,
+        )
+        if comm.get_world_size() > 1:
+            dist.all_reduce(intersection)
+            dist.all_reduce(union)
+            dist.all_reduce(target)
+        return (
+            intersection.cpu().numpy(),
+            union.cpu().numpy(),
+            target.cpu().numpy(),
+        )
+
+    def _summarize_metrics(self, intersection, union, target):
+        iou_class = intersection / (union + 1e-10)
+        rec_class = intersection / (target + 1e-10)
+        pre_class = intersection / (union + intersection - target + 1e-10)
+        f1_class = 2 * (pre_class * rec_class) / (pre_class + rec_class + 1e-10)
+        return dict(
+            iou_class=iou_class,
+            rec_class=rec_class,
+            pre_class=pre_class,
+            f1_class=f1_class,
+            m_iou=np.mean(iou_class),
+            m_rec=np.mean(rec_class),
+            m_pre=np.mean(pre_class),
+            m_f1=np.mean(f1_class),
+            all_acc=sum(intersection) / (sum(target) + 1e-10),
+        )
+
+    def _log_metric_summary(self, prefix, metrics):
+        self.trainer.logger.info(
+            "{} result: mIoU/mPre/mRec/mF1/OA {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}.".format(
+                prefix,
+                metrics["m_iou"],
+                metrics["m_pre"],
+                metrics["m_rec"],
+                metrics["m_f1"],
+                metrics["all_acc"],
+            )
+        )
+        max_name_length = max(len(name) for name in self.trainer.cfg.data.names)
+        max_idx_width = len(str(self.trainer.cfg.data.num_classes - 1))
+        for i in range(self.trainer.cfg.data.num_classes):
+            self.trainer.logger.info(
+                "{} Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
+                    prefix,
+                    idx=i,
+                    name=self.trainer.cfg.data.names[i],
+                    iou=metrics["iou_class"][i],
+                    pre=metrics["pre_class"][i],
+                    rec=metrics["rec_class"][i],
+                    f1=metrics["f1_class"][i],
+                    idx_width=max_idx_width,
+                    name_width=max_name_length,
+                )
+            )
+
     def after_epoch(self):
         if self.trainer.cfg.evaluate:
             self.eval()
@@ -485,7 +617,26 @@ class SemSegEvaluator(HookBase):
     def eval(self):
         self.trainer.logger.info(">>>>>>>>>>>>>>>> Start Evaluation >>>>>>>>>>>>>>>>")
         self.trainer.model.eval()
-        diagnostic_collector = self._build_diagnostic_collector()
+        diagnostic_collector_raw = self._build_diagnostic_collector()
+        postprocess = self._build_postprocess()
+        postprocess_mode = (
+            self.postprocess.get("mode", "compare")
+            if self.postprocess is not None
+            else "compare"
+        )
+        enable_post_metrics = postprocess is not None and postprocess_mode in ("compare", "only")
+        diagnostic_collector_post = (
+            self._build_diagnostic_collector()
+            if enable_post_metrics and diagnostic_collector_raw is not None
+            else None
+        )
+        raw_intersection = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        raw_union = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        raw_target = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        post_intersection = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        post_union = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        post_target = np.zeros(self.trainer.cfg.data.num_classes, dtype=np.float64)
+        loss_list = []
         for i, input_dict in enumerate(self.trainer.val_loader):
             for key in input_dict.keys():
                 if isinstance(input_dict[key], torch.Tensor):
@@ -494,9 +645,13 @@ class SemSegEvaluator(HookBase):
                 output_dict = self.trainer.model(input_dict)
             output = output_dict["seg_logits"]
             loss = output_dict["loss"]
-            pred = output.max(1)[1]
-            diagnostic_logits = output
             segment = input_dict["segment"]
+            eval_dict = dict(
+                coord=input_dict["coord"],
+                offset=input_dict["offset"],
+                segment=segment,
+            )
+            eval_logits = output
             if "origin_coord" in input_dict.keys():
                 idx, _ = pointops.knn_query(
                     1,
@@ -506,47 +661,54 @@ class SemSegEvaluator(HookBase):
                     input_dict["origin_offset"].int(),
                 )
                 idx = idx.flatten().long()
-                pred = pred[idx]
-                diagnostic_logits = output[idx]
+                eval_logits = output[idx]
                 segment = input_dict["origin_segment"]
-            if diagnostic_collector is not None:
-                diagnostic_collector.update(diagnostic_logits, segment)
-            intersection, union, target = intersection_and_union_gpu(
-                pred,
-                segment,
-                self.trainer.cfg.data.num_classes,
-                self.trainer.cfg.data.ignore_index,
+                eval_dict["coord"] = input_dict["origin_coord"]
+                eval_dict["offset"] = input_dict["origin_offset"]
+                eval_dict["segment"] = segment
+            raw_pred_dict = build_prediction_dict(eval_logits, data_dict=eval_dict)
+            raw_pred = raw_pred_dict["pred"]
+            if diagnostic_collector_raw is not None:
+                diagnostic_collector_raw.update(eval_logits, segment)
+            intersection, union, target = self._reduce_intersection_and_union(
+                raw_pred, segment
             )
-            if comm.get_world_size() > 1:
-                dist.all_reduce(intersection), dist.all_reduce(union), dist.all_reduce(
-                    target
+            raw_intersection += intersection
+            raw_union += union
+            raw_target += target
+            loss_list.append(loss.item())
+            accuracy = np.sum(intersection) / (np.sum(target) + 1e-10)
+            post_accuracy = None
+            post_pred_dict = None
+            if enable_post_metrics:
+                post_pred_dict = postprocess(raw_pred_dict)
+                post_pred = post_pred_dict["pred"]
+                post_i, post_u, post_t = self._reduce_intersection_and_union(
+                    post_pred, segment
                 )
-            intersection, union, target = (
-                intersection.cpu().numpy(),
-                union.cpu().numpy(),
-                target.cpu().numpy(),
-            )
-            # Here there is no need to sync since sync happened in dist.all_reduce
-            self.trainer.storage.put_scalar("val_intersection", intersection)
-            self.trainer.storage.put_scalar("val_union", union)
-            self.trainer.storage.put_scalar("val_target", target)
-            self.trainer.storage.put_scalar("val_loss", loss.item())
-            accuracy = np.sum(intersection) / (np.sum(target + 1e-10))
+                post_intersection += post_i
+                post_union += post_u
+                post_target += post_t
+                post_accuracy = np.sum(post_i) / (np.sum(post_t) + 1e-10)
+                if diagnostic_collector_post is not None:
+                    diagnostic_collector_post.update(
+                        post_pred_dict["seg_logits"], segment
+                    )
             
             info = "Test: [{iter}/{max_iter}] ".format(
                 iter=i + 1, max_iter=len(self.trainer.val_loader)
             )
             if "origin_coord" in input_dict.keys():
                 info = "Interp. " + info
-            self.trainer.logger.info(
-                info
-                + "Loss {loss:.4f} Acc {acc:.4f}".format(
-                    iter=i + 1,
-                    max_iter=len(self.trainer.val_loader),
-                    loss=loss.item(),
-                    acc=accuracy
-                )
+            log_message = info + "Loss {loss:.4f} RawAcc {acc:.4f}".format(
+                iter=i + 1,
+                max_iter=len(self.trainer.val_loader),
+                loss=loss.item(),
+                acc=accuracy,
             )
+            if post_accuracy is not None:
+                log_message += " PostAcc {:.4f}".format(post_accuracy)
+            self.trainer.logger.info(log_message)
             if self.trainer.cfg.empty_cache:
                 torch.cuda.empty_cache()
             if self.trainer.cfg.empty_cache_freq > 0:
@@ -554,51 +716,55 @@ class SemSegEvaluator(HookBase):
                     torch.cuda.empty_cache()
 
         diagnostic_summary = None
-        if diagnostic_collector is not None:
+        if diagnostic_collector_raw is not None:
             comm.synchronize()
-            gathered_states = comm.gather(diagnostic_collector.state_dict(), dst=0)
+            gathered_raw_states = comm.gather(diagnostic_collector_raw.state_dict(), dst=0)
+            gathered_post_states = (
+                comm.gather(diagnostic_collector_post.state_dict(), dst=0)
+                if diagnostic_collector_post is not None
+                else None
+            )
             if comm.is_main_process():
                 merged_collector = self._build_diagnostic_collector()
-                for state_dict in gathered_states:
+                for state_dict in gathered_raw_states:
                     merged_collector.merge_state_dict(state_dict)
-                diagnostic_summary = merged_collector.summarize()
+                diagnostic_summary = dict(raw=merged_collector.summarize())
+                if gathered_post_states is not None:
+                    merged_post_collector = self._build_diagnostic_collector()
+                    for state_dict in gathered_post_states:
+                        merged_post_collector.merge_state_dict(state_dict)
+                    diagnostic_summary["post"] = merged_post_collector.summarize()
 
-        loss_avg = self.trainer.storage.history("val_loss").avg
-        intersection = self.trainer.storage.history("val_intersection").total
-        union = self.trainer.storage.history("val_union").total
-        target = self.trainer.storage.history("val_target").total
-        iou_class = intersection / (union + 1e-10)
-        # acc_class = intersection / (target + 1e-10)
-        rec_class = intersection / (target + 1e-10)
-        pre_class = intersection / (union+intersection-target + 1e-10)
-        f1_class = 2 * (pre_class * rec_class) / (pre_class + rec_class + 1e-10)
-        m_iou = np.mean(iou_class)
-        # m_acc = np.mean(acc_class)
-        m_rec = np.mean(rec_class)
-        m_pre = np.mean(pre_class)
-        m_f1 = np.mean(f1_class)
-        all_acc = sum(intersection) / (sum(target) + 1e-10)
-        self.trainer.logger.info(
-            "Val result: mIoU/mPre/mRec/mF1/OA {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}.".format(
-                m_iou, m_pre, m_rec, m_f1, all_acc
+        loss_avg = float(np.mean(loss_list)) if len(loss_list) > 0 else 0.0
+        raw_metrics = self._summarize_metrics(raw_intersection, raw_union, raw_target)
+        self._log_metric_summary("Raw Val", raw_metrics)
+        post_metrics = None
+        if enable_post_metrics:
+            post_metrics = self._summarize_metrics(
+                post_intersection, post_union, post_target
             )
-        )
+            self._log_metric_summary("Post Val", post_metrics)
         if diagnostic_summary is not None:
+            diagnostic_focus = (
+                diagnostic_summary["post"]
+                if "post" in diagnostic_summary
+                else diagnostic_summary["raw"]
+            )
             topk_items = [
-                "Top{} {:.4f}".format(k, diagnostic_summary["topk_accuracy"][str(k)])
-                for k in sorted(map(int, diagnostic_summary["topk_accuracy"].keys()))
+                "Top{} {:.4f}".format(k, diagnostic_focus["topk_accuracy"][str(k)])
+                for k in sorted(map(int, diagnostic_focus["topk_accuracy"].keys()))
             ]
             self.trainer.logger.info(
                 "Diagnostic: total/error/OA {}/{}/{:.4f}, {}.".format(
-                    diagnostic_summary["total_points"],
-                    diagnostic_summary["error_points"],
-                    diagnostic_summary["overall_accuracy"],
+                    diagnostic_focus["total_points"],
+                    diagnostic_focus["error_points"],
+                    diagnostic_focus["overall_accuracy"],
                     ", ".join(topk_items),
                 )
             )
-            if len(diagnostic_summary["top_misclassifications"]) > 0:
+            if len(diagnostic_focus["top_misclassifications"]) > 0:
                 top_pairs = []
-                for item in diagnostic_summary["top_misclassifications"][:3]:
+                for item in diagnostic_focus["top_misclassifications"][:3]:
                     top_pairs.append(
                         "{}->{} {} ({:.2%})".format(
                             item["gt_name"],
@@ -610,47 +776,54 @@ class SemSegEvaluator(HookBase):
                 self.trainer.logger.info(
                     "Diagnostic Top Confusions: {}.".format(" | ".join(top_pairs))
                 )
-        # 计算最长的类别名称长度 & 最大的索引宽度
-        max_name_length = max(len(name) for name in self.trainer.cfg.data.names)
-        max_idx_width = len(str(self.trainer.cfg.data.num_classes - 1))
-        for i in range(self.trainer.cfg.data.num_classes):
-            self.trainer.logger.info(
-                "Class_{idx:<{idx_width}}-{name:<{name_width}} Result: iou/pre/rec/f1 {iou:.4f}/{pre:.4f}/{rec:.4f}/{f1:.4f}".format(
-                    idx=i,
-                    name=self.trainer.cfg.data.names[i],
-                    iou=iou_class[i],
-                    pre=pre_class[i],
-                    rec=rec_class[i],
-                    f1=f1_class[i],
-                    idx_width=max_idx_width,
-                    name_width=max_name_length
-                )
-            )
         current_epoch = self.trainer.epoch + 1
         if self.trainer.writer is not None:
             self.trainer.writer.add_scalar("val/loss", loss_avg, current_epoch)
-            self.trainer.writer.add_scalar("val/mIoU", m_iou, current_epoch)
-            self.trainer.writer.add_scalar("val/mPre", m_pre, current_epoch)
-            self.trainer.writer.add_scalar("val/mRec", m_rec, current_epoch)
-            self.trainer.writer.add_scalar("val/mF1", m_f1, current_epoch)
-            self.trainer.writer.add_scalar("val/OA", all_acc, current_epoch)
+            self.trainer.writer.add_scalar("val/raw_mIoU", raw_metrics["m_iou"], current_epoch)
+            self.trainer.writer.add_scalar("val/raw_mPre", raw_metrics["m_pre"], current_epoch)
+            self.trainer.writer.add_scalar("val/raw_mRec", raw_metrics["m_rec"], current_epoch)
+            self.trainer.writer.add_scalar("val/raw_mF1", raw_metrics["m_f1"], current_epoch)
+            self.trainer.writer.add_scalar("val/raw_OA", raw_metrics["all_acc"], current_epoch)
+            if not enable_post_metrics:
+                self.trainer.writer.add_scalar("val/mIoU", raw_metrics["m_iou"], current_epoch)
+                self.trainer.writer.add_scalar("val/mPre", raw_metrics["m_pre"], current_epoch)
+                self.trainer.writer.add_scalar("val/mRec", raw_metrics["m_rec"], current_epoch)
+                self.trainer.writer.add_scalar("val/mF1", raw_metrics["m_f1"], current_epoch)
+                self.trainer.writer.add_scalar("val/OA", raw_metrics["all_acc"], current_epoch)
+            else:
+                self.trainer.writer.add_scalar("val/post_mIoU", post_metrics["m_iou"], current_epoch)
+                self.trainer.writer.add_scalar("val/post_mPre", post_metrics["m_pre"], current_epoch)
+                self.trainer.writer.add_scalar("val/post_mRec", post_metrics["m_rec"], current_epoch)
+                self.trainer.writer.add_scalar("val/post_mF1", post_metrics["m_f1"], current_epoch)
+                self.trainer.writer.add_scalar("val/post_OA", post_metrics["all_acc"], current_epoch)
             if self.write_cls_iou:
                 for i in range(self.trainer.cfg.data.num_classes):
                     self.trainer.writer.add_scalar(
                         f"val/cls_{i}-{self.trainer.cfg.data.names[i]} IoU",
-                        iou_class[i],
+                        raw_metrics["iou_class"][i],
                         current_epoch,
                     )
         if diagnostic_summary is not None and comm.is_main_process():
             diagnostic_summary["epoch"] = current_epoch
             diagnostic_summary["metrics"] = dict(
-                loss=loss_avg,
-                mIoU=m_iou,
-                mPre=m_pre,
-                mRec=m_rec,
-                mF1=m_f1,
-                OA=all_acc,
+                raw=dict(
+                    loss=loss_avg,
+                    mIoU=raw_metrics["m_iou"],
+                    mPre=raw_metrics["m_pre"],
+                    mRec=raw_metrics["m_rec"],
+                    mF1=raw_metrics["m_f1"],
+                    OA=raw_metrics["all_acc"],
+                )
             )
+            if post_metrics is not None:
+                diagnostic_summary["metrics"]["post"] = dict(
+                    loss=loss_avg,
+                    mIoU=post_metrics["m_iou"],
+                    mPre=post_metrics["m_pre"],
+                    mRec=post_metrics["m_rec"],
+                    mF1=post_metrics["m_f1"],
+                    OA=post_metrics["all_acc"],
+                )
             diagnostic_path = os.path.join(
                 self.trainer.cfg.save_path,
                 "diagnostic_epoch_{:04d}.json".format(current_epoch),
@@ -661,7 +834,7 @@ class SemSegEvaluator(HookBase):
                 "Diagnostic json saved to {}".format(diagnostic_path)
             )
         self.trainer.logger.info("<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<")
-        self.trainer.comm_info["current_metric_value"] = m_iou  # save for saver
+        self.trainer.comm_info["current_metric_value"] = raw_metrics["m_iou"]  # save for saver
         self.trainer.comm_info["current_metric_name"] = "mIoU"  # save for saver
 
     def after_train(self):
