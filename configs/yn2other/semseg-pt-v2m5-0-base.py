@@ -10,8 +10,8 @@ empty_cache_freq = 50
 empty_cache_per_epoch = True
 enable_amp = True
 enable_weighted_sampler= True
-save_path = "exp/yn2other/semseg-pt-v2m5-1-20260607"
-weight = "exp/yn2other/semseg-pt-v2m5-1-20260607/model/model_last.pth"
+save_path = "exp/yn2other/semseg-pt-v2m5-0-20260609"
+weight = "exp/yn2other/semseg-pt-v2m5-0-20260609/model/model_last.pth"
 weight = None
 num_classes = 9
 grid_size = 1.0
@@ -83,7 +83,7 @@ model = dict(
              loss_weight=1.0,
              ignore_index=-1),
         dict(type="LovaszLoss", mode="multiclass", loss_weight=1.0, ignore_index=-1),
-        # dict(type="FlexibleTverskyLoss",classes=[5],class_alpha=[0.7],classes_beta=[0.3],skip_empty=True,loss_weight=0.1,ignore_index=-1),
+        dict(type="FlexibleTverskyLoss",classes=[5],class_alpha=[0.65],classes_beta=[0.35],skip_empty=True,loss_weight=0.05,ignore_index=-1),
         # dict(type="FocalLoss", gamma=2.0, alpha=0.5, reduction="mean", loss_weight=1.0, ignore_index=-1),
     ],
     # fmt: on
@@ -246,7 +246,7 @@ hooks = [
             transforms=[
                 # single-class rules are composed by stacking multiple transforms here
                 dict(type="ConfidenceFallback", class_name="vehicle", min_prob=0.45, fallback="top2"),
-                # dict(type="MarginFallback", class_name="vehicle", max_margin=0.05, fallback="top2"),
+                dict(type="MarginFallback", class_name="vehicle", max_margin=0.05, fallback="top2"),
             ],
         ),
     ),
@@ -271,6 +271,7 @@ test = dict(
         save_raw=False,  # whether to dump an extra raw prediction file under save_path/result
         transforms=[
             dict(type="ConfidenceFallback", class_name="vehicle", min_prob=0.45, fallback="top2"),
+            dict(type="MarginFallback", class_name="vehicle", max_margin=0.05, fallback="top2"),
         ],
     ),
 )

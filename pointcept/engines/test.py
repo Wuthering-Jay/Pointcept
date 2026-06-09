@@ -192,9 +192,9 @@ class SemSegTester(TesterBase):
                 )
             )
 
-    def _map_prediction_to_origin(self, pred_dict, data_dict):
+    def _map_prediction_to_origin(self, pred_dict, data_dict, segment):
         if "origin_segment" not in data_dict.keys():
-            return pred_dict, data_dict["segment"]
+            return pred_dict, segment
         assert "inverse" in data_dict.keys()
         inverse = data_dict["inverse"]
         if not isinstance(inverse, torch.Tensor):
@@ -334,7 +334,9 @@ class SemSegTester(TesterBase):
                     name=data_name,
                 )
             )
-            raw_pred_dict, segment = self._map_prediction_to_origin(raw_pred_dict, data_dict)
+            raw_pred_dict, segment = self._map_prediction_to_origin(
+                raw_pred_dict, data_dict, segment
+            )
             if postprocess is not None:
                 post_pred_dict = postprocess(raw_pred_dict)
                 final_pred_dict = post_pred_dict
